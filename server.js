@@ -26,7 +26,6 @@ const TELEGRAM_BOT_TOKEN = 'PLACEHOLDER_BOT_TOKEN';
 
 const TELEGRAM_CHAT_ID = '-1004384134428';
 const TG_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
-const PROXY_URL = 'http://127.0.0.1:7897';
 
 // ─── store mappings ───────────────────────────────────────────
 const visitorTopics = new Map();  // visitorId -> { topicId, name }
@@ -47,7 +46,7 @@ function randomVisitor() {
 }
 
 // ─── Telegram API helper (via proxy) ────────────────────────
-// Use node-fetch style proxy by using URL object + https.Agent
+const PROXY_URL = process.env.PROXY_URL || 'http://127.0.0.1:7897';
 const { HttpProxyAgent } = require('http-proxy-agent');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
@@ -226,18 +225,41 @@ async function tgSendPhoto(chatId, topicId, imagePath, caption) {
 // ─── Download Telegram file ───────────────────────────────
 async function downloadTGFile(fileId) {
   const info = await tgAPI('getFile', { file_id: fileId });
-  if (!info.ok || !info.result) return null;
+  if (!info.ok || !info.result) {
+    console.error('downloadTGFile: getFile failed', info);
+    return null;
+  }
   const filePath = info.result.file_path;
   const ext = path.extname(filePath) || '.jpg';
   const filename = Date.now() + '-' + Math.random().toString(36).slice(2, 8) + ext;
   const savePath = path.join(UPLOADS_DIR, filename);
+  // Ensure uploads directory exists
+  try { if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true }); } catch(e) {}
   const url = 'https://api.telegram.org/file/bot' + TELEGRAM_BOT_TOKEN + '/' + filePath;
+  console.log('downloadTGFile: downloading', filePath, 'via proxy');
   return new Promise((resolve) => {
     const file = fs.createWriteStream(savePath);
     https.get(url, { agent: proxyAgent }, (res) => {
+      if (res.statusCode !== 200) {
+        console.error('downloadTGFile: HTTP', res.statusCode, 'for', filePath);
+        res.resume();
+        try { fs.unlinkSync(savePath); } catch {}
+        resolve(null);
+        return;
+      }
       res.pipe(file);
-      file.on('finish', () => { file.close(); resolve('/uploads/' + filename); });
-    }).on('error', () => { try { fs.unlinkSync(savePath); } catch {} resolve(null); });
+      file.on('finish', () => {
+        file.close(() => {
+          const size = fs.statSync(savePath).size;
+          console.log('downloadTGFile: saved', filename, size + ' bytes');
+          resolve('/uploads/' + filename);
+        });
+      });
+    }).on('error', (err) => {
+      console.error('downloadTGFile: connection error', err.message);
+      try { fs.unlinkSync(savePath); } catch {}
+      resolve(null);
+    });
   });
 }
 
@@ -520,16 +542,17 @@ function handleTGMessage(msg) {
   if (hasPhoto) {
     const photo = msg.photo[msg.photo.length - 1];
     console.log('TG photo → visitor ' + visitorId);
-    const vs = io.sockets.sockets.get(visitorId);
     const vTopic = visitorTopics.get(visitorId);
     downloadTGFile(photo.file_id).then(imgUrl => {
       if (!imgUrl) {
         console.error('Failed to download TG photo');
         return;
       }
+      // Re-check visitor socket (may have reconnected during async download)
+      const currentVs = io.sockets.sockets.get(visitorId);
       const entry = { from: 'admin', type: 'image', url: imgUrl, text: text || '', timestamp: new Date().toISOString() };
-      if (vs) {
-        vs.emit('admin-message', { text: text || '', type: 'image', url: imgUrl });
+      if (currentVs) {
+        currentVs.emit('admin-message', { text: text || '', type: 'image', url: imgUrl });
         if (vTopic && vTopic.legacyId) saveChatLog(vTopic.legacyId, entry);
       } else if (vTopic && vTopic.legacyId) {
         savePendingMessage(vTopic.legacyId, entry);
