@@ -17,4 +17,5 @@ debug-*.js
 install-*.js
 final-*.js
 start-*.js
+update-*.js
 *.bak
