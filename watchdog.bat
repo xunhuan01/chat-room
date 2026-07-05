@@ -13,5 +13,6 @@ if %errorlevel% neq 0 (
 :: 检查 cloudflared
 tasklist /FI "IMAGENAME eq cloudflared.exe" 2>nul | find /I "cloudflared.exe" >nul
 if %errorlevel% neq 0 (
-    start /B cloudflared tunnel run --credentials-contents "{\"AccountTag\": \"FILTERED\", \"TunnelID\": \"FILTERED\", \"TunnelSecret\": \"FILTERED\"}" ce8cebb1-e625-4422-8d07-5b5ac5ab9294
+    cd /d %CHATROOM_DIR%
+    start /B cloudflared tunnel run --credentials-file data\tunnel-creds.json ce8cebb1-e625-4422-8d07-5b5ac5ab9294
 )

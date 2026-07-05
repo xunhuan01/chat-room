@@ -76,7 +76,7 @@ async function tgAPI(method, params = {}) {
 // ─── Static files ─────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
 
-const ADMIN_PASSWORD = 'admin888';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin888';
 const DATA_DIR = path.join(__dirname, 'data');
 const VISITORS_FILE = path.join(DATA_DIR, 'visitors.json');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
