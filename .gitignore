@@ -7,3 +7,14 @@ fix-*.js
 add-*.js
 .env
 .DS_Store
+
+# Temp setup scripts
+fix-*.js
+setup-*.js
+check-*.js
+test-*.js
+debug-*.js
+install-*.js
+final-*.js
+start-*.js
+*.bak
