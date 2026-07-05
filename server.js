@@ -354,7 +354,8 @@ io.on('connection', (socket) => {
     console.log(`Connected: ${visitor.name} (${socket.id})`);
 
     io.emit('visitor-joined', {
-      id: visitor.id, name: visitor.name, color: visitor.color, createdAt: visitor.createdAt
+      id: visitor.id, name: visitor.name, color: visitor.color, createdAt: visitor.createdAt,
+      legacyId: visitor.legacyId || ''
     });
     socket.emit('welcome', { name: visitor.name, color: visitor.color, visitorId: visitor.legacyId || '' });
 

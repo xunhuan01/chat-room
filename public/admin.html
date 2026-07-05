@@ -267,35 +267,85 @@
       input.focus();
     }
 
+    const visitedByLegacy = new Map(); // legacyId -> persistent key (legacyId or socketId)
+
+    function getKey(v) {
+      return (v.legacyId && v.legacyId !== '') ? v.legacyId : v.id;
+    }
+
     socket.on('sessions', (sessions) => {
-      sessions.forEach(s => visitors.set(s.id, { name: s.name, color: s.color, createdAt: s.createdAt }));
+      sessions.forEach(s => {
+        const key = s.id;
+        visitors.set(key, { id: s.id, name: s.name, color: s.color, createdAt: s.createdAt, legacyId: '' });
+      });
       renderList();
     });
     socket.on('visitor-joined', (v) => {
-      visitors.set(v.id, { name: v.name, color: v.color, createdAt: v.createdAt });
+      const key = v.legacyId || v.id;
+      // Deduplicate: same legacyId = same visitor, just update socket id
+      if (visitors.has(key)) {
+        const existing = visitors.get(key);
+        existing.id = v.id; // update to newest socket id
+        // Remap msgs/unread from old id mapping if needed
+        if (v.legacyId && v.id !== key) {
+          if (msgs.has(key)) { msgs.set(v.id, msgs.get(key)); msgs.delete(key); }
+          if (unread.has(key)) { unread.set(v.id, unread.get(key)); unread.delete(key); }
+          visitors.delete(key);
+          visitors.set(v.id, existing);
+          if (current === key) current = v.id;
+        }
+      } else {
+        visitors.set(key, { id: v.id, name: v.name, color: v.color, createdAt: v.createdAt, legacyId: v.legacyId || '' });
+      }
       renderList();
     });
     socket.on('visitor-left', (data) => {
-      visitors.delete(data.visitorId);
-      if (current === data.visitorId) {
-        current = null;
-        header.innerHTML = '选择一个访客';
-        input.disabled = true;
-        sendBtn.disabled = true;
-        renderMsgs();
+      const vid = data.visitorId;
+      // Find the visitor entry with this socket id
+      let keyToDelete = null;
+      for (const [key, info] of visitors) {
+        if (info.id === vid) {
+          keyToDelete = key;
+          break;
+        }
+      }
+      if (keyToDelete) {
+        visitors.delete(keyToDelete);
+        msgs.delete(keyToDelete);
+        unread.delete(keyToDelete);
+        if (current === keyToDelete) {
+          current = null;
+          header.innerHTML = '选择一个访客';
+          input.disabled = true;
+          sendBtn.disabled = true;
+          renderMsgs();
+        }
       }
       renderList();
     });
     socket.on('visitor-message', (data) => {
       const { visitorId, visitorName, visitorColor, text, timestamp, type, url } = data;
-      if (!visitors.has(visitorId))
-        visitors.set(visitorId, { name: visitorName, color: visitorColor, createdAt: new Date().toISOString() });
-      if (!msgs.has(visitorId)) msgs.set(visitorId, []);
-      msgs.get(visitorId).push({ from: 'other', text, time: timestamp, type: type || 'text', url: url || '' });
-      if (current !== visitorId)
-        unread.set(visitorId, (unread.get(visitorId) || 0) + 1);
+      // Find visitor by socket id in case they reconnected
+      let found = false;
+      for (const [key, info] of visitors) {
+        if (info.id === visitorId) {
+          if (!msgs.has(key)) msgs.set(key, []);
+          msgs.get(key).push({ from: 'other', text, time: timestamp, type: type || 'text', url: url || '' });
+          if (current !== key) unread.set(key, (unread.get(key) || 0) + 1);
+          found = true;
+          if (current === key) renderMsgs();
+          break;
+        }
+      }
+      if (!found) {
+        // New visitor from message (edge case)
+        const key = visitorId;
+        visitors.set(key, { id: visitorId, name: visitorName, color: visitorColor, createdAt: timestamp, legacyId: '' });
+        if (!msgs.has(key)) msgs.set(key, []);
+        msgs.get(key).push({ from: 'other', text, time: timestamp, type: type || 'text', url: url || '' });
+        unread.set(key, (unread.get(key) || 0) + 1);
+      }
       renderList();
-      if (current === visitorId) renderMsgs();
     });
 
     function send() {
