@@ -22,9 +22,9 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
 // ─── Telegram Bot config ──────────────────────────────────────
-const TELEGRAM_BOT_TOKEN = 'PLACEHOLDER_BOT_TOKEN';
+const TELEGRAM_BOT_TOKEN = process.env.BOT_TOKEN || 'PLACEHOLDER_BOT_TOKEN';
 
-const TELEGRAM_CHAT_ID = '-1004384134428';
+const TELEGRAM_CHAT_ID = process.env.GROUP_ID || '-1004384134428';
 const TG_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
 // ─── store mappings ───────────────────────────────────────────
