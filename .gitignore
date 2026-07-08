@@ -1,21 +1,4 @@
 node_modules/
-data/
-*.log
-node-output.log
-patch-server.js
-fix-*.js
-add-*.js
 .env
-.DS_Store
-
-# Temp setup scripts
-fix-*.js
-setup-*.js
-check-*.js
-test-*.js
-debug-*.js
-install-*.js
-final-*.js
-start-*.js
-update-*.js
-*.bak
+.healthcheck_id
+*.log
