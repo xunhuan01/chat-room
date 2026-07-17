@@ -7,6 +7,7 @@ const cookieParser = require('cookie-parser');
 const fs = require('fs');
 const multer = require('multer');
 const FormData = require('form-data');
+const sharp = require('sharp');
 
 // Prevent crash on broken pipe (console.log when stdout closes)
 const origLog = console.log;
@@ -105,7 +106,7 @@ const upload = multer({
 });
 
 // Serve uploaded images
-app.use('/uploads', express.static(UPLOADS_DIR));
+app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d', etag: true, lastModified: true }));
 
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -249,9 +250,38 @@ async function downloadTGFile(fileId) {
       }
       res.pipe(file);
       file.on('finish', () => {
-        file.close(() => {
+        file.close(async () => {
           const size = fs.statSync(savePath).size;
           console.log('downloadTGFile: saved', filename, size + ' bytes');
+          // sharp 压缩：GIF 跳过；PNG 保持 png 格式；webp 保持 webp；jpg/jpeg 转 jpeg；
+          // 压缩后比原图大就保留原图
+          try {
+            const ext = path.extname(savePath).toLowerCase();
+            if (ext !== '.gif') {
+              const tmpPath = savePath + '.tmp';
+              const pipeline = sharp(savePath).resize(1280, 1280, { fit: 'inside', withoutEnlargement: true });
+              if (ext === '.png') {
+                await pipeline.png({ quality: 70, compressionLevel: 9 }).toFile(tmpPath);
+              } else if (ext === '.webp') {
+                await pipeline.webp({ quality: 70 }).toFile(tmpPath);
+              } else {
+                // jpg / jpeg / 其他
+                await pipeline.jpeg({ quality: 70 }).toFile(tmpPath);
+              }
+              const compressedSize = fs.statSync(tmpPath).size;
+              if (compressedSize < size) {
+                fs.unlinkSync(savePath);
+                fs.renameSync(tmpPath, savePath);
+                console.log('[sharp] compressed', filename, size, '->', compressedSize);
+              } else {
+                fs.unlinkSync(tmpPath);
+                console.log('[sharp] kept original', filename, size, '(compressed was larger:', compressedSize, ')');
+              }
+            }
+          } catch (e) {
+            console.error('[sharp] compress failed:', e.message);
+            // 压缩失败用原图，不影响流程
+          }
           resolve('/uploads/' + filename);
         });
       });
@@ -261,6 +291,22 @@ async function downloadTGFile(fileId) {
       resolve(null);
     });
   });
+}
+
+// downloadTGFile wrapper with retry (max 2 retries, 1s interval)
+async function downloadTGFileWithRetry(fileId, maxRetries = 2) {
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      const result = await downloadTGFile(fileId);
+      if (result) return result;
+      // downloadTGFile resolves null on failure — treat as throw to trigger retry
+      throw new Error('downloadTGFile returned null');
+    } catch (e) {
+      console.error('[TG] downloadTGFile attempt ' + (i+1) + '/' + (maxRetries+1) + ' failed: ' + e.message);
+      if (i < maxRetries) await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+  return null;
 }
 
 app.get('/', (req, res) => {
@@ -416,7 +462,7 @@ io.on('connection', (socket) => {
           if (type === 'image' && url) {
             const imgPath = path.join(UPLOADS_DIR, path.basename(url));
             if (fs.existsSync(imgPath)) {
-              await tgSendPhoto(TELEGRAM_CHAT_ID, topic.topicId, imgPath, text || '');
+              tgSendPhoto(TELEGRAM_CHAT_ID, topic.topicId, imgPath, text || '').catch(e => console.error('[TG] sendPhoto failed:', e.message));
             }
           } else if (text) {
             await tgAPI('sendMessage', {
@@ -544,7 +590,7 @@ function handleTGMessage(msg) {
     const photo = msg.photo[msg.photo.length - 1];
     console.log('TG photo → visitor ' + visitorId);
     const vTopic = visitorTopics.get(visitorId);
-    downloadTGFile(photo.file_id).then(imgUrl => {
+    downloadTGFileWithRetry(photo.file_id).then(imgUrl => {
       if (!imgUrl) {
         console.error('Failed to download TG photo');
         return;

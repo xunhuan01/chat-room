@@ -148,6 +148,26 @@
       background: #fff;
       border-top: 1px solid #f0f0f0;
     }
+    .img-placeholder { position: relative; display: inline-block; }
+    .img-placeholder img { display: block; max-width: 240px; max-height: 300px; border-radius: 8px; }
+    .img-placeholder .overlay {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.35); color: #fff;
+      font-size: 13px; font-weight: 500;
+      border-radius: 8px;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    }
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      display: inline-block; margin-right: 6px; vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .bubble .err { color: #c0392b; font-size: 13px; padding: 6px 2px; }
     .connecting {
       text-align: center;
       color: #999;
@@ -165,7 +185,7 @@
       <span class="expire">消息72h后销毁</span>
     </div>
   <div class="messages" id="messages">
-    <div class="connecting">正在连接客服，请稍候...</div>
+    <div class="connecting">正在连接客服，初次连接需要 3~5 秒，请耐心等待...</div>
   </div>
   <div class="input-area">
     <input type="text" id="input" placeholder="输入消息..." 
@@ -179,7 +199,7 @@
     <button id="sendBtn" disabled>↑</button>
     <input type="file" id="imageInput" accept="image/*" hidden>
   </div>
-  <div class="status" id="status">正在连接...</div>
+  <div class="status" id="status">初次连接需要 3~5 秒，请耐心等待...</div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
@@ -280,20 +300,84 @@
 
     // Image upload
     imgBtn.onclick = () => imageInput.click();
+    async function compressImage(file, maxW = 1280, maxH = 1280, quality = 0.7) {
+      if (file.size < 200 * 1024) return file;
+      return new Promise((resolve) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          let w = img.width, h = img.height;
+          if (w > maxW || h > maxH) {
+            const ratio = Math.min(maxW / w, maxH / h);
+            w = Math.round(w * ratio); h = Math.round(h * ratio);
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          const outType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+          canvas.toBlob((blob) => {
+            if (!blob) { resolve(file); return; }
+            const newName = file.name.replace(/\.\w+$/, outType === 'image/png' ? '.png' : '.jpg');
+            resolve(new File([blob], newName, { type: outType }));
+          }, outType, quality);
+        };
+        img.onerror = () => resolve(file);
+        img.src = url;
+      });
+    }
+
     imageInput.onchange = async () => {
       const file = imageInput.files[0];
       if (!file) return;
-      const form = new FormData();
-      form.append('image', file);
+      imgBtn.disabled = true;
+      const localUrl = URL.createObjectURL(file);
+      const phDiv = document.createElement('div');
+      phDiv.className = 'msg me';
+      phDiv.innerHTML = '<div class="bubble"><div class="img-placeholder"><img src="' + localUrl + '" style="opacity:0.4"><div class="overlay"><span class="spinner"></span>发送中…</div></div></div><div class="time">' + fmt(new Date().toISOString()) + '</div>';
+      msgEl.appendChild(phDiv);
+      msgEl.scrollTop = msgEl.scrollHeight;
       try {
-        const resp = await fetch('/upload', { method: 'POST', body: form });
-        const data = await resp.json();
-        if (data.url) {
-          socket.emit('visitor-message', { type: 'image', url: data.url, text: '' });
-          addMsg('me', '', new Date().toISOString(), 'image', data.url);
-        }
-      } catch (e) { alert('图片上传失败'); }
-      imageInput.value = '';
+        const compressed = await compressImage(file);
+        const form = new FormData();
+        form.append('image', compressed);
+        await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const pct = Math.round(e.loaded / e.total * 100);
+              const ov = phDiv.querySelector('.overlay');
+              if (ov) ov.innerHTML = '<span class="spinner"></span>' + pct + '%';
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const data = JSON.parse(xhr.responseText);
+                if (data.url) {
+                  socket.emit('visitor-message', { type: 'image', url: data.url, text: '' });
+                  phDiv.querySelector('.bubble').innerHTML = '<img src="' + data.url + '" onclick="window.open(this.src)" alt="图片">';
+                  URL.revokeObjectURL(localUrl);
+                  resolve();
+                } else {
+                  reject(new Error(data.error || '上传失败'));
+                }
+              } catch (e) { reject(e); }
+            } else { reject(new Error('HTTP ' + xhr.status)); }
+          };
+          xhr.onerror = () => reject(new Error('网络错误'));
+          xhr.open('POST', '/upload', true);
+          xhr.send(form);
+        });
+      } catch (e) {
+        console.error('Image upload failed:', e);
+        const bubble = phDiv.querySelector('.bubble');
+        if (bubble) bubble.innerHTML = '<div class="err">❌ 发送失败</div>';
+        URL.revokeObjectURL(localUrl);
+      } finally {
+        imgBtn.disabled = false;
+        imageInput.value = '';
+      }
     };
   </script>
 </body>

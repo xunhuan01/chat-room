@@ -129,6 +129,26 @@
       margin-top: 3px;
       padding: 0 4px;
     }
+    .img-placeholder { position: relative; display: inline-block; }
+    .img-placeholder img { display: block; max-width: 240px; max-height: 300px; border-radius: 8px; }
+    .img-placeholder .overlay {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.35); color: #fff;
+      font-size: 13px; font-weight: 500;
+      border-radius: 8px;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    }
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      display: inline-block; margin-right: 6px; vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .bubble .err { color: #c0392b; font-size: 13px; padding: 6px 2px; }
     .empty-state {
       flex: 1;
       display: flex;
@@ -362,22 +382,94 @@
 
     // Image upload
     imgBtn.onclick = () => imageInput.click();
+    async function compressImage(file, maxW = 1280, maxH = 1280, quality = 0.7) {
+      if (file.size < 200 * 1024) return file;
+      return new Promise((resolve) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          let w = img.width, h = img.height;
+          if (w > maxW || h > maxH) {
+            const ratio = Math.min(maxW / w, maxH / h);
+            w = Math.round(w * ratio); h = Math.round(h * ratio);
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          const outType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+          canvas.toBlob((blob) => {
+            if (!blob) { resolve(file); return; }
+            const newName = file.name.replace(/\.\w+$/, outType === 'image/png' ? '.png' : '.jpg');
+            resolve(new File([blob], newName, { type: outType }));
+          }, outType, quality);
+        };
+        img.onerror = () => resolve(file);
+        img.src = url;
+      });
+    }
+
     imageInput.onchange = async () => {
       const file = imageInput.files[0];
       if (!file || !current) return;
-      const form = new FormData();
-      form.append('image', file);
+      imgBtn.disabled = true;
+      const localUrl = URL.createObjectURL(file);
+      // Push placeholder entry into message store, render, then find the DOM node.
+      if (!msgs.has(current)) msgs.set(current, []);
+      const placeholderEntry = { from: 'me', text: '', time: new Date().toISOString(), type: 'image', url: localUrl, _placeholder: true };
+      msgs.get(current).push(placeholderEntry);
+      renderMsgs();
+      // Locate the just-rendered bubble (last .msg.me in messages container)
+      const msgNodes = messages.querySelectorAll('.msg.me');
+      const phNode = msgNodes[msgNodes.length - 1];
+      const phBubble = phNode ? phNode.querySelector('.bubble') : null;
+      if (phBubble) {
+        phBubble.innerHTML = '<div class="img-placeholder"><img src="' + localUrl + '" style="opacity:0.4"><div class="overlay"><span class="spinner"></span>发送中…</div></div>';
+      }
+      messages.scrollTop = messages.scrollHeight;
       try {
-        const resp = await fetch('/upload', { method: 'POST', body: form });
-        const data = await resp.json();
-        if (data.url) {
-          socket.emit('admin-message', { visitorId: current, type: 'image', url: data.url, text: '' });
-          if (!msgs.has(current)) msgs.set(current, []);
-          msgs.get(current).push({ from: 'me', text: '', time: new Date().toISOString(), type: 'image', url: data.url });
-          renderMsgs();
-        }
-      } catch (e) { alert('图片上传失败'); }
-      imageInput.value = '';
+        const compressed = await compressImage(file);
+        const form = new FormData();
+        form.append('image', compressed);
+        await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const pct = Math.round(e.loaded / e.total * 100);
+              if (phBubble) {
+                const ov = phBubble.querySelector('.overlay');
+                if (ov) ov.innerHTML = '<span class="spinner"></span>' + pct + '%';
+              }
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const data = JSON.parse(xhr.responseText);
+                if (data.url) {
+                  socket.emit('admin-message', { visitorId: current, type: 'image', url: data.url, text: '' });
+                  // Replace placeholder entry in msgs store with final
+                  placeholderEntry.url = data.url;
+                  delete placeholderEntry._placeholder;
+                  phBubble.innerHTML = '<img src="' + data.url + '" onclick="window.open(this.src)" alt="图片">';
+                  URL.revokeObjectURL(localUrl);
+                  resolve();
+                } else { reject(new Error(data.error || '上传失败')); }
+              } catch (e) { reject(e); }
+            } else { reject(new Error('HTTP ' + xhr.status)); }
+          };
+          xhr.onerror = () => reject(new Error('网络错误'));
+          xhr.open('POST', '/upload', true);
+          xhr.send(form);
+        });
+      } catch (e) {
+        console.error('Image upload failed:', e);
+        if (phBubble) phBubble.innerHTML = '<div class="err">❌ 发送失败</div>';
+        URL.revokeObjectURL(localUrl);
+      } finally {
+        imgBtn.disabled = false;
+        imageInput.value = '';
+      }
     };
   </script>
 </body>
