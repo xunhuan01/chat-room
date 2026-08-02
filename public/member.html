@@ -55,7 +55,7 @@
   <div class="top-bar">
     <a class="back" href="/">‹ 返回</a>
     <span class="title">👑 会员群</span>
-    <span class="member-count" id="count">0人在线</span>
+    <span class="member-count" id="count">信息72小时后自动销毁</span>
   </div>
 
   <!-- 密码门 -->
@@ -191,7 +191,7 @@
       msgList.innerHTML = "";
       addSystem("— 以下为最近消息 —");
       for (const m of history) {
-        addMsg(m.nick, m.avatar, m.bg, m.color, m.text, m.type, m.url, m.time, m.id === socket.id);
+        addMsg(m.nick, m.avatar, m.bg, m.color, m.text, m.type, m.url, m.time, m.memberId === memberId);
       }
       msgList.scrollTop = msgList.scrollHeight;
     });
@@ -202,7 +202,7 @@
       if (m.id !== socket.id) addSystem("有人离开了群聊");
     });
     socket.on("member-message", (m) => {
-      const isMe = m.id === socket.id;
+      const isMe = m.memberId === memberId;
       addMsg(m.nick, m.avatar, m.bg, m.color, m.text, m.type, m.url, m.time, isMe);
     });
   }

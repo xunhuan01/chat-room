@@ -798,7 +798,7 @@ memberNS.on('connection', (socket) => {
     const type = data && data.type || 'text';
     const url = data && data.url || '';
     if (!text && !url) return;
-    const payload = { id: socket.id, nick: member.nick, avatar: member.avatar, bg: member.bg, color: member.color, text, type, url, time: Date.now() };
+    const payload = { id: socket.id, memberId, nick: member.nick, avatar: member.avatar, bg: member.bg, color: member.color, text, type, url, time: Date.now() };
     memberNS.emit('member-message', payload);
     // 持久化（顺带清理 72h 前的旧消息）
     appendMemberLog(payload);
@@ -949,6 +949,7 @@ function handleTGMemberMessage(msg) {
   const sender = (msg.from && (msg.from.username ? '@' + msg.from.username : msg.from.first_name)) || '管理员';
   const payload = (type, url) => ({
     id: 'tg-' + msg.message_id,
+    memberId: 'tg',
     nick: sender,
     avatar: '📣',
     bg: '#f0f0f0',
