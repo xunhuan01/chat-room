@@ -126,6 +126,8 @@ const VISITORS_FILE = path.join(DATA_DIR, 'visitors.json');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const POSTS_FILE = path.join(DATA_DIR, 'posts.json');
 const POSTS_MEDIA_DIR = path.join(DATA_DIR, 'posts_media');
+const MEMBER_LOG_FILE = path.join(DATA_DIR, 'member_logs.json');
+const MEMBER_PROFILES_FILE = path.join(DATA_DIR, 'member_profiles.json');
 
 app.use(express.json());
 
@@ -282,6 +284,75 @@ const uploadPost = multer({
   }
 });
 
+// ─── 会员群数据层（日志持久化 + 72h 清理 + 会员档案） ────────
+const MEMBER_LOG_MAX_AGE = 72 * 3600 * 1000;  // 72 小时
+const MEMBER_AVATARS = ['🐼','🦊','🐯','🐻','🐨','🐰','🐹','🐸','🐵','🐷','🐺','🦁','🐮','🐶','🐱','🦄','🐧','🐢','🦉','🐙'];
+const MEMBER_BG_COLORS = ['#e8f4ff','#f0f7ee','#fdf3e3','#f3e8ff','#e6f7f5','#ffe9ec','#eef2ff','#f5f5dc','#fff0e6','#e8fff0'];
+
+function loadMemberLogs() {
+  try {
+    ensureDataDir();
+    if (!fs.existsSync(MEMBER_LOG_FILE)) return [];
+    return JSON.parse(fs.readFileSync(MEMBER_LOG_FILE, 'utf8')) || [];
+  } catch (e) { console.error('loadMemberLogs:', e.message); return []; }
+}
+
+function saveMemberLogs(logs) {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(MEMBER_LOG_FILE, JSON.stringify(logs, null, 2));
+  } catch (e) { console.error('saveMemberLogs:', e.message); }
+}
+
+function appendMemberLog(entry) {
+  const logs = loadMemberLogs();
+  logs.push(entry);
+  // 顺带清理超 72h 的旧消息
+  const cutoff = Date.now() - MEMBER_LOG_MAX_AGE;
+  const filtered = logs.filter(m => m.time >= cutoff);
+  if (filtered.length !== logs.length) {
+    console.log('[member] 清理过期消息', logs.length - filtered.length, '条');
+  }
+  saveMemberLogs(filtered);
+  return filtered;
+}
+
+function loadMemberProfiles() {
+  try {
+    ensureDataDir();
+    if (!fs.existsSync(MEMBER_PROFILES_FILE)) return {};
+    return JSON.parse(fs.readFileSync(MEMBER_PROFILES_FILE, 'utf8')) || {};
+  } catch (e) { console.error('loadMemberProfiles:', e.message); return {}; }
+}
+
+function saveMemberProfiles(profiles) {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(MEMBER_PROFILES_FILE, JSON.stringify(profiles, null, 2));
+  } catch (e) { console.error('saveMemberProfiles:', e.message); }
+}
+
+// 根据 memberId 取或建会员档案（昵称 + emoji 头像 + 背景色）
+function getOrCreateMemberProfile(memberId) {
+  const profiles = loadMemberProfiles();
+  if (memberId && profiles[memberId]) {
+    return profiles[memberId];
+  }
+  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+  const profile = {
+    nick: `${adj}${noun}`,
+    avatar: MEMBER_AVATARS[Math.floor(Math.random() * MEMBER_AVATARS.length)],
+    bg: MEMBER_BG_COLORS[Math.floor(Math.random() * MEMBER_BG_COLORS.length)],
+    color: colors[Math.floor(Math.random() * colors.length)],
+  };
+  if (memberId) {
+    profiles[memberId] = profile;
+    saveMemberProfiles(profiles);
+  }
+  return profile;
+}
+
 // ─── Image upload ───────────────────────────────────────────
 app.post('/upload', upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: '未上传文件' });
@@ -316,6 +387,38 @@ async function tgSendPhoto(chatId, topicId, imagePath, caption) {
   });
 }
 
+// ─── sharp 图片压缩（TG 下载 & 网页上传共用）───────────────
+// GIF 跳过；PNG/webp/jpg 压缩到 1280px 内、quality 70；压缩后比原图大则保留原图
+async function compressImageWithSharp(savePath) {
+  try {
+    const size = fs.statSync(savePath).size;
+    const ext = path.extname(savePath).toLowerCase();
+    if (ext === '.gif') return;
+    const tmpPath = savePath + '.tmp';
+    const pipeline = sharp(savePath).resize(1280, 1280, { fit: 'inside', withoutEnlargement: true });
+    if (ext === '.png') {
+      await pipeline.png({ quality: 70, compressionLevel: 9 }).toFile(tmpPath);
+    } else if (ext === '.webp') {
+      await pipeline.webp({ quality: 70 }).toFile(tmpPath);
+    } else {
+      // jpg / jpeg / 其他
+      await pipeline.jpeg({ quality: 70 }).toFile(tmpPath);
+    }
+    const compressedSize = fs.statSync(tmpPath).size;
+    if (compressedSize < size) {
+      fs.unlinkSync(savePath);
+      fs.renameSync(tmpPath, savePath);
+      console.log('[sharp] compressed', path.basename(savePath), size, '->', compressedSize);
+    } else {
+      fs.unlinkSync(tmpPath);
+      console.log('[sharp] kept original', path.basename(savePath), size, '(compressed was larger:', compressedSize, ')');
+    }
+  } catch (e) {
+    console.error('[sharp] compress failed:', e.message);
+    // 压缩失败用原图，不影响流程
+  }
+}
+
 // ─── Download Telegram file ───────────────────────────────
 async function downloadTGFile(fileId, targetDir) {
   const dir = targetDir || UPLOADS_DIR;
@@ -347,36 +450,9 @@ async function downloadTGFile(fileId, targetDir) {
         file.close(async () => {
           const size = fs.statSync(savePath).size;
           console.log('downloadTGFile: saved', filename, size + ' bytes');
-          // sharp 压缩：GIF 跳过；PNG 保持 png 格式；webp 保持 webp；jpg/jpeg 转 jpeg；
-          // 压缩后比原图大就保留原图
-          try {
-            const ext = path.extname(savePath).toLowerCase();
-            if (ext !== '.gif') {
-              const tmpPath = savePath + '.tmp';
-              const pipeline = sharp(savePath).resize(1280, 1280, { fit: 'inside', withoutEnlargement: true });
-              if (ext === '.png') {
-                await pipeline.png({ quality: 70, compressionLevel: 9 }).toFile(tmpPath);
-              } else if (ext === '.webp') {
-                await pipeline.webp({ quality: 70 }).toFile(tmpPath);
-              } else {
-                // jpg / jpeg / 其他
-                await pipeline.jpeg({ quality: 70 }).toFile(tmpPath);
-              }
-              const compressedSize = fs.statSync(tmpPath).size;
-              if (compressedSize < size) {
-                fs.unlinkSync(savePath);
-                fs.renameSync(tmpPath, savePath);
-                console.log('[sharp] compressed', filename, size, '->', compressedSize);
-              } else {
-                fs.unlinkSync(tmpPath);
-                console.log('[sharp] kept original', filename, size, '(compressed was larger:', compressedSize, ')');
-              }
-            }
-          } catch (e) {
-            console.error('[sharp] compress failed:', e.message);
-            // 压缩失败用原图，不影响流程
-          }
-          resolve('/uploads/' + filename);
+          // sharp 压缩（GIF 跳过；压缩后比原图大就保留原图）
+          await compressImageWithSharp(savePath);
+          resolve((dir === POSTS_MEDIA_DIR ? '/posts-media/' : '/uploads/') + filename);
         });
       });
     }).on('error', (err) => {
@@ -465,8 +541,10 @@ app.post('/upload-post', (req, res, next) => {
   }
   res.cookie(ADMIN_COOKIE, ADMIN_PASSWORD, { httpOnly: true, maxAge: 30 * 24 * 3600 * 1000, sameSite: 'lax' });
   next();
-}, uploadPost.single('image'), (req, res) => {
+}, uploadPost.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '未上传文件' });
+  // 网页上传的图片同样压缩（和 TG 通道一致）
+  await compressImageWithSharp(req.file.path);
   res.json({ url: '/posts-media/' + req.file.filename });
 });
 
@@ -684,27 +762,41 @@ const memberNS = io.of('/member');
 
 memberNS.on('connection', (socket) => {
   const pw = socket.handshake.query.pw || '';
-  const nick = (socket.handshake.query.nick || '').toString().slice(0, 20);
   if (pw !== MEMBER_PASSWORD) {
     socket.emit('member-auth-fail', { message: '密码错误' });
     socket.disconnect(true);
     return;
   }
+  // 会员档案：memberId（cookie 传入）→ 固定昵称 + emoji 头像
+  const memberId = (socket.handshake.query.memberId || '').toString().slice(0, 40);
+  const profile = getOrCreateMemberProfile(memberId);
   const member = {
     id: socket.id,
-    nick: nick || '会员' + Math.floor(100 + Math.random() * 900),
-    color: colors[Math.floor(Math.random() * colors.length)],
+    memberId,
+    nick: profile.nick,
+    avatar: profile.avatar,
+    bg: profile.bg,
+    color: profile.color,
   };
-  memberNS.emit('member-joined', { id: socket.id, nick: member.nick, color: member.color });
-  console.log('Member joined:', member.nick, socket.id);
+  memberNS.emit('member-joined', { id: socket.id, nick: member.nick, avatar: member.avatar, bg: member.bg });
+  console.log('Member joined:', member.nick, member.avatar, socket.id);
+
+  // 回放近 72h 历史消息
+  const history = loadMemberLogs();
+  if (history.length > 0) {
+    socket.emit('member-history', history);
+    console.log('Member history sent:', history.length, 'msgs');
+  }
 
   socket.on('member-message', (data) => {
     const text = (data && data.text || '').toString().slice(0, 2000);
     const type = data && data.type || 'text';
     const url = data && data.url || '';
     if (!text && !url) return;
-    const payload = { id: socket.id, nick: member.nick, color: member.color, text, type, url, time: Date.now() };
+    const payload = { id: socket.id, nick: member.nick, avatar: member.avatar, bg: member.bg, color: member.color, text, type, url, time: Date.now() };
     memberNS.emit('member-message', payload);
+    // 持久化（顺带清理 72h 前的旧消息）
+    appendMemberLog(payload);
     // TG 转发到会员话题
     if (MEMBER_TOPIC_ID) {
       if (type === 'image' && url) {
@@ -851,6 +943,8 @@ function handleTGMemberMessage(msg) {
   const payload = (type, url) => ({
     id: 'tg-' + msg.message_id,
     nick: sender,
+    avatar: '📣',
+    bg: '#f0f0f0',
     color: '#2563eb',
     text,
     type,
@@ -862,14 +956,18 @@ function handleTGMemberMessage(msg) {
     const photo = msg.photo[msg.photo.length - 1];
     downloadTGFile(photo.file_id).then(imgUrl => {
       if (imgUrl) {
-        memberNS.emit('member-message', payload('image', imgUrl));
+        const p = payload('image', imgUrl);
+        memberNS.emit('member-message', p);
+        appendMemberLog(p);
       } else {
         console.error('[member] TG 图片下载失败');
       }
     });
     return;
   }
-  memberNS.emit('member-message', payload('text', ''));
+  const p = payload('text', '');
+  memberNS.emit('member-message', p);
+  appendMemberLog(p);
 }
 
 function handleTGMessage(msg) {

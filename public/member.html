@@ -27,12 +27,14 @@
   /* 聊天 */
   .chat { max-width: 560px; margin: 0 auto; padding: 12px; display: none; }
   .msg { display: flex; margin-bottom: 14px; }
+  .msg .avatar { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; margin-right: 8px; }
   .msg .bubble-wrap { max-width: 75%; }
   .msg .nick { font-size: 11px; color: #aaa; margin: 0 4px 3px; }
   .msg .bubble { background: #fff; border-radius: 10px; padding: 9px 13px; font-size: 14px; line-height: 1.6; color: #333; word-break: break-word; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
   .msg .bubble img { max-width: 220px; max-height: 280px; border-radius: 8px; display: block; cursor: pointer; }
   .msg .time { font-size: 10px; color: #ccc; margin: 3px 4px 0; }
   .msg.me { flex-direction: row-reverse; }
+  .msg.me .avatar { margin-right: 0; margin-left: 8px; }
   .msg.me .bubble { background: #95ec69; }
   .msg.me .nick { text-align: right; }
   .msg.me .time { text-align: right; }
@@ -95,10 +97,16 @@
   const gateErr = document.getElementById("gateErr");
   const countEl = document.getElementById("count");
   let socket = null;
-  let myNick = "";
 
-  const ADJ = ['安静的','好奇的','神秘的','快乐的','忧郁的','兴奋的','慵懒的','热心的','机智的','勇敢的'];
-  const NOUN = ['小猫','企鹅','熊猫','海豚','狐狸','兔子','考拉','仓鼠','树懒','鹦鹉','狮子','老虎','鲨鱼','鲸鱼','梅花鹿'];
+  // 会员身份 cookie（昵称/头像固定）
+  function getMemberId() {
+    const m = document.cookie.match(/(?:^|;\s*)memberId=([^;]+)/);
+    if (m) return decodeURIComponent(m[1]);
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    document.cookie = "memberId=" + encodeURIComponent(id) + ";max-age=31536000;path=/";
+    return id;
+  }
+  const memberId = getMemberId();
 
   function esc(s) {
     return String(s == null ? "" : s)
@@ -113,11 +121,12 @@
     return h + ":" + m;
   }
 
-  function addMsg(nick, color, text, type, url, ts, isMe) {
+  function addMsg(nick, avatar, bg, color, text, type, url, ts, isMe) {
     const row = document.createElement("div");
     row.className = "msg" + (isMe ? " me" : "");
     const t = fmtTime(ts || Date.now());
     row.innerHTML = `
+      <div class="avatar" style="background:${esc(bg || '#f0f0f0')}">${esc(avatar || '🐼')}</div>
       <div class="bubble-wrap">
         <div class="nick" style="color:${esc(color || '#888')}">${isMe ? '' : esc(nick)}</div>
         <div class="bubble">
@@ -143,7 +152,7 @@
   function enter() {
     const pw = pwInput.value.trim();
     if (!pw) { gateErr.style.display = "block"; return; }
-    socket = io("/member", { query: { pw } });
+    socket = io("/member", { query: { pw, memberId } });
     socket.on("member-auth-fail", () => {
       gateErr.style.display = "block";
       pwInput.value = "";
@@ -155,6 +164,14 @@
       inputArea.style.display = "block";
       addSystem("欢迎来到会员群");
     });
+    socket.on("member-history", (history) => {
+      msgList.innerHTML = "";
+      addSystem("— 以下为最近消息 —");
+      for (const m of history) {
+        addMsg(m.nick, m.avatar, m.bg, m.color, m.text, m.type, m.url, m.time, m.id === socket.id);
+      }
+      msgList.scrollTop = msgList.scrollHeight;
+    });
     socket.on("member-joined", (m) => {
       if (m.id !== socket.id) addSystem(m.nick + " 加入了群聊");
     });
@@ -163,7 +180,7 @@
     });
     socket.on("member-message", (m) => {
       const isMe = m.id === socket.id;
-      addMsg(m.nick, m.color, m.text, m.type, m.url, m.time, isMe);
+      addMsg(m.nick, m.avatar, m.bg, m.color, m.text, m.type, m.url, m.time, isMe);
     });
   }
 
