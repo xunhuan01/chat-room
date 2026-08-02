@@ -509,19 +509,20 @@ function canAccessPosts(req) {
 }
 
 // 会员登录（帖子墙真锁入口）
+const MEMBER_COOKIE_MAXAGE = 10 * 365 * 24 * 3600 * 1000;  // 10年 ≈ 永久
 app.post('/api/member-login', (req, res) => {
   const { pw } = req.body || {};
   if (pw !== MEMBER_PASSWORD) {
     return res.status(403).json({ error: '密码错误' });
   }
-  res.cookie(MEMBER_COOKIE, MEMBER_AUTH_HASH, { httpOnly: true, maxAge: 30 * 24 * 3600 * 1000, sameSite: 'lax' });
+  res.cookie(MEMBER_COOKIE, MEMBER_AUTH_HASH, { httpOnly: true, maxAge: MEMBER_COOKIE_MAXAGE, sameSite: 'lax' });
   res.json({ ok: true });
 });
 
 app.get('/posts', (req, res) => {
   // 管理员可带 ?pw= 直接种 admin cookie（发帖入口）
   if (req.query.pw === ADMIN_PASSWORD) {
-    res.cookie(ADMIN_COOKIE, ADMIN_PASSWORD, { httpOnly: true, maxAge: 30 * 24 * 3600 * 1000, sameSite: 'lax' });
+    res.cookie(ADMIN_COOKIE, ADMIN_PASSWORD, { httpOnly: true, maxAge: MEMBER_COOKIE_MAXAGE, sameSite: 'lax' });
   }
   res.sendFile(path.join(__dirname, 'public', 'posts.html'));
 });
@@ -540,7 +541,7 @@ app.post('/upload-post', (req, res, next) => {
   if (req.query.pw !== ADMIN_PASSWORD) {
     return res.status(403).json({ error: '密码错误' });
   }
-  res.cookie(ADMIN_COOKIE, ADMIN_PASSWORD, { httpOnly: true, maxAge: 30 * 24 * 3600 * 1000, sameSite: 'lax' });
+  res.cookie(ADMIN_COOKIE, ADMIN_PASSWORD, { httpOnly: true, maxAge: MEMBER_COOKIE_MAXAGE, sameSite: 'lax' });
   next();
 }, uploadPost.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '未上传文件' });
@@ -763,7 +764,10 @@ const memberNS = io.of('/member');
 
 memberNS.on('connection', (socket) => {
   const pw = socket.handshake.query.pw || '';
-  if (pw !== MEMBER_PASSWORD) {
+  // 密码或已登录 cookie（帖子墙/会员群共享登录状态）二选一
+  const cookies = socket.handshake.headers.cookie || '';
+  const authedByCookie = cookies.indexOf(MEMBER_COOKIE + '=' + MEMBER_AUTH_HASH) !== -1;
+  if (pw !== MEMBER_PASSWORD && !authedByCookie) {
     socket.emit('member-auth-fail', { message: '密码错误' });
     socket.disconnect(true);
     return;

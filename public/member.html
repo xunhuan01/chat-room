@@ -98,12 +98,12 @@
   const countEl = document.getElementById("count");
   let socket = null;
 
-  // 会员身份 cookie（昵称/头像固定）
+  // 会员身份 cookie（昵称/头像固定，永久）
   function getMemberId() {
     const m = document.cookie.match(/(?:^|;\s*)memberId=([^;]+)/);
     if (m) return decodeURIComponent(m[1]);
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-    document.cookie = "memberId=" + encodeURIComponent(id) + ";max-age=31536000;path=/";
+    document.cookie = "memberId=" + encodeURIComponent(id) + ";max-age=315360000;path=/";
     return id;
   }
   const memberId = getMemberId();
@@ -152,7 +152,30 @@
   function enter() {
     const pw = pwInput.value.trim();
     if (!pw) { gateErr.style.display = "block"; return; }
-    socket = io("/member", { query: { pw, memberId } });
+    // 先种登录 cookie（帖子墙/会员群共享，30天有效）
+    fetch("/api/member-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pw })
+    }).then(async resp => {
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data.ok) {
+        gateErr.style.display = "block";
+        pwInput.value = "";
+        pwInput.focus();
+        return;
+      }
+      connectMember();
+    }).catch(() => {
+      gateErr.style.display = "block";
+    });
+  }
+  document.getElementById("enterBtn").onclick = enter;
+  pwInput.addEventListener("keydown", e => { if (e.key === "Enter") enter(); });
+
+  // 连接会员群 Socket
+  function connectMember() {
+    socket = io("/member", { query: { pw: pwInput.value.trim(), memberId } });
     socket.on("member-auth-fail", () => {
       gateErr.style.display = "block";
       pwInput.value = "";
@@ -183,6 +206,14 @@
       addMsg(m.nick, m.avatar, m.bg, m.color, m.text, m.type, m.url, m.time, isMe);
     });
   }
+
+  // 页面加载：检查是否已登录（cookie 30 天内免密）
+  fetch("/api/admin-check").then(r => r.json()).then(data => {
+    if (data.member) {
+      // 已登录：直接进，不弹密码门
+      connectMember();
+    }
+  }).catch(() => {});
 
   // 发送
   function sendText() {
