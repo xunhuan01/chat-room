@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const https = require('https');
+const iconv = require('iconv-lite');
 const { Server } = require('socket.io');
 const path = require('path');
 const cookieParser = require('cookie-parser');
@@ -70,6 +71,46 @@ async function tgAPI(method, params = {}) {
     });
     req.on('error', reject);
     req.write(body);
+    req.end();
+  });
+}
+
+// ─── Visitor IP → city (for TG push) ──────────────────────
+const ipLocationCache = new Map();  // ip -> { city, ts }
+
+function getClientIP(socket) {
+  const h = socket.handshake.headers || {};
+  let ip = h['cf-connecting-ip'] || (h['x-forwarded-for'] || '').split(',')[0].trim() || socket.handshake.address;
+  return (ip || '').replace('::ffff:', '');
+}
+
+function getIPLocation(ip) {
+  if (!ip || ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return Promise.resolve(null);
+  const cached = ipLocationCache.get(ip);
+  if (cached && Date.now() - cached.ts < 24 * 3600 * 1000) return Promise.resolve(cached.city);
+  return new Promise((resolve) => {
+    const url = `https://whois.pconline.com.cn/ipJson.jsp?ip=${encodeURIComponent(ip)}&json=true`;
+    const req = https.request(url, {
+      method: 'GET',
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://whois.pconline.com.cn/' },
+      timeout: 5000,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(iconv.decode(Buffer.concat(chunks), 'gbk'));
+          let city = '';
+          if (j.pro) city += j.pro;
+          if (j.city) city += j.city;
+          if (!city) city = j.addr || '';
+          if (city) ipLocationCache.set(ip, { city, ts: Date.now() });
+          resolve(city || null);
+        } catch (e) { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
     req.end();
   });
 }
@@ -416,11 +457,13 @@ io.on('connection', (socket) => {
       const pending = loadPendingMessages(visitor.legacyId);
       if (pending.length > 0) {
         for (const pm of pending) {
-          socket.emit('admin-message', { text: pm.text });
+          socket.emit('admin-message', { text: pm.text || '', type: pm.type || 'text', url: pm.url || '' });
           // Save to chat log so pending messages persist on future refresh
           saveChatLog(visitor.legacyId, {
             from: 'admin',
-            text: pm.text,
+            type: pm.type || 'text',
+            url: pm.url || '',
+            text: pm.text || '',
             timestamp: pm.timestamp || new Date().toISOString()
           });
         }
@@ -430,7 +473,7 @@ io.on('connection', (socket) => {
     }
 
     // 创建 TG 话题
-    createTopicForVisitor(visitor, socket.id);
+    createTopicForVisitor(visitor, socket.id, getClientIP(socket));
 
     socket.on('visitor-message', async (data) => {
       const { text, type, url } = data;
@@ -496,8 +539,10 @@ io.on('connection', (socket) => {
 // ─── Create/Reuse Telegram Forum Topic ───────────────────────
 const cookieTopics = loadCookieTopics();
 
-async function createTopicForVisitor(visitor, socketId) {
+async function createTopicForVisitor(visitor, socketId, clientIP) {
   const legacyId = visitor.legacyId;
+  const loc = await getIPLocation(clientIP);
+  const locText = loc ? `\n📍 ${loc}` : '';
 
   // Already has a persistent topic for this cookie
   if (legacyId && cookieTopics[legacyId]) {
@@ -508,7 +553,7 @@ async function createTopicForVisitor(visitor, socketId) {
     tgAPI('sendMessage', {
       chat_id: TELEGRAM_CHAT_ID,
       message_thread_id: topicId,
-      text: `🟢 ${visitor.name} 重新上线`,
+      text: `🟢 ${visitor.name} 重新上线${locText}`,
     }).catch(() => {});
     console.log(`Reusing topic: ${visitor.name} → topicId=${topicId}`);
     return;
@@ -537,7 +582,7 @@ async function createTopicForVisitor(visitor, socketId) {
     await tgAPI('sendMessage', {
       chat_id: TELEGRAM_CHAT_ID,
       message_thread_id: topicId,
-      text: `🟢 ${visitor.name} 加入了对话`,
+      text: `🟢 ${visitor.name} 加入了对话${locText}`,
     });
     console.log('Topic created: ' + visitor.name + ' -> topicId=' + topicId + ' (cookie=' + legacyId + ')');
   } catch (err) {
