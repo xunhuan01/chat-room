@@ -121,6 +121,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin888';
 const MEMBER_PASSWORD = process.env.MEMBER_PASSWORD || 'CHANGE_ME_MEMBER_PW';
 const MEMBER_TOPIC_ID = process.env.MEMBER_TOPIC_ID || '';
+const POSTS_TOPIC_ID = process.env.POSTS_TOPIC_ID || '';
 const DATA_DIR = path.join(__dirname, 'data');
 const VISITORS_FILE = path.join(DATA_DIR, 'visitors.json');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
@@ -916,10 +917,12 @@ function handleTGPostToWall(msg) {
       author,
       time: new Date().toISOString()
     });
-    tgAPI('sendMessage', {
+    const reply = {
       chat_id: msg.chat.id,
       text: '✅ 已发布到帖子墙'
-    }).catch(() => {});
+    };
+    if (msg.message_thread_id) reply.message_thread_id = msg.message_thread_id;
+    tgAPI('sendMessage', reply).catch(() => {});
     console.log('[posts] TG 发帖:', author, text.slice(0, 30));
   };
 
@@ -983,11 +986,20 @@ function handleTGMessage(msg) {
   if (String(msg.chat.id) !== TELEGRAM_CHAT_ID) return;
   if (!msg.message_thread_id) return;
 
+  // 帖子墙壁话题 → 自动上墙（管理员发帖通道）
+  if (POSTS_TOPIC_ID && String(msg.message_thread_id) === String(POSTS_TOPIC_ID)) {
+    handleTGPostToWall(msg);
+    return;
+  }
+
   // 会员群话题消息 → 广播给网页端会员
   if (MEMBER_TOPIC_ID && String(msg.message_thread_id) === String(MEMBER_TOPIC_ID)) {
     handleTGMemberMessage(msg);
     return;
   }
+
+  // 未知话题：打日志（用于抓取新话题 ID）
+  console.log('[TG] 未识别话题 chat=' + msg.chat.id + ' thread=' + msg.message_thread_id + ' text=' + (msg.text || msg.caption || '').slice(0, 30));
 
   const visitorId = topicVisitors.get(msg.message_thread_id);
   if (!visitorId) return;
