@@ -119,9 +119,15 @@ function getIPLocation(ip) {
 app.use(express.static(path.join(__dirname, 'public')));
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin888';
+const MEMBER_PASSWORD = process.env.MEMBER_PASSWORD || 'CHANGE_ME_MEMBER_PW';
+const MEMBER_TOPIC_ID = process.env.MEMBER_TOPIC_ID || '';
 const DATA_DIR = path.join(__dirname, 'data');
 const VISITORS_FILE = path.join(DATA_DIR, 'visitors.json');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+const POSTS_FILE = path.join(DATA_DIR, 'posts.json');
+const POSTS_MEDIA_DIR = path.join(DATA_DIR, 'posts_media');
+
+app.use(express.json());
 
 // Multer config - image uploads
 const storage = multer.diskStorage({
@@ -230,6 +236,52 @@ function clearPendingMessages(visitorId) {
   } catch (e) {}
 }
 
+// ─── 帖子墙 (posts wall) ──────────────────────────────────
+function loadPosts() {
+  try {
+    ensureDataDir();
+    if (!fs.existsSync(POSTS_FILE)) return [];
+    return JSON.parse(fs.readFileSync(POSTS_FILE, 'utf8')) || [];
+  } catch (e) { console.error('loadPosts:', e.message); return []; }
+}
+
+function savePosts(posts) {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(POSTS_FILE, JSON.stringify(posts, null, 2));
+  } catch (e) { console.error('savePosts:', e.message); }
+}
+
+function addPost(post) {
+  const posts = loadPosts();
+  posts.unshift(post);  // 新帖在最前
+  savePosts(posts);
+  return post;
+}
+
+// 帖子图片上传（存 posts_media，不随每日清理删除）
+const postStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    ensureDataDir();
+    if (!fs.existsSync(POSTS_MEDIA_DIR)) fs.mkdirSync(POSTS_MEDIA_DIR, { recursive: true });
+    cb(null, POSTS_MEDIA_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, Date.now() + '-' + Math.random().toString(36).slice(2, 8) + ext);
+  }
+});
+const uploadPost = multer({
+  storage: postStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) cb(null, true);
+    else cb(new Error('仅允许图片格式'));
+  }
+});
+
 // ─── Image upload ───────────────────────────────────────────
 app.post('/upload', upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: '未上传文件' });
@@ -265,7 +317,8 @@ async function tgSendPhoto(chatId, topicId, imagePath, caption) {
 }
 
 // ─── Download Telegram file ───────────────────────────────
-async function downloadTGFile(fileId) {
+async function downloadTGFile(fileId, targetDir) {
+  const dir = targetDir || UPLOADS_DIR;
   const info = await tgAPI('getFile', { file_id: fileId });
   if (!info.ok || !info.result) {
     console.error('downloadTGFile: getFile failed', info);
@@ -274,9 +327,9 @@ async function downloadTGFile(fileId) {
   const filePath = info.result.file_path;
   const ext = path.extname(filePath) || '.jpg';
   const filename = Date.now() + '-' + Math.random().toString(36).slice(2, 8) + ext;
-  const savePath = path.join(UPLOADS_DIR, filename);
-  // Ensure uploads directory exists
-  try { if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true }); } catch(e) {}
+  const savePath = path.join(dir, filename);
+  // Ensure target directory exists
+  try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch(e) {}
   const url = 'https://api.telegram.org/file/bot' + TELEGRAM_BOT_TOKEN + '/' + filePath;
   console.log('downloadTGFile: downloading', filePath, 'via proxy');
   return new Promise((resolve) => {
@@ -359,6 +412,96 @@ app.get('/admin', (req, res) => {
     return res.status(403).send('需要密码访问管理面板。请在 URL 后面加上 ?pw=你的密码');
   }
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// ─── 帖子墙 + 会员群 页面路由 ─────────────────────────────
+const crypto = require('crypto');
+const MEMBER_AUTH_HASH = crypto.createHash('sha256').update(MEMBER_PASSWORD).digest('hex');
+const MEMBER_COOKIE = 'member_auth';
+const ADMIN_COOKIE = 'admin_auth';
+
+function isMember(req) {
+  return req.cookies && req.cookies[MEMBER_COOKIE] === MEMBER_AUTH_HASH;
+}
+function isAdmin(req) {
+  return req.cookies && req.cookies[ADMIN_COOKIE] === ADMIN_PASSWORD;
+}
+// 会员或管理员都可访问
+function canAccessPosts(req) {
+  return isMember(req) || isAdmin(req);
+}
+
+// 会员登录（帖子墙真锁入口）
+app.post('/api/member-login', (req, res) => {
+  const { pw } = req.body || {};
+  if (pw !== MEMBER_PASSWORD) {
+    return res.status(403).json({ error: '密码错误' });
+  }
+  res.cookie(MEMBER_COOKIE, MEMBER_AUTH_HASH, { httpOnly: true, maxAge: 30 * 24 * 3600 * 1000, sameSite: 'lax' });
+  res.json({ ok: true });
+});
+
+app.get('/posts', (req, res) => {
+  // 管理员可带 ?pw= 直接种 admin cookie（发帖入口）
+  if (req.query.pw === ADMIN_PASSWORD) {
+    res.cookie(ADMIN_COOKIE, ADMIN_PASSWORD, { httpOnly: true, maxAge: 30 * 24 * 3600 * 1000, sameSite: 'lax' });
+  }
+  res.sendFile(path.join(__dirname, 'public', 'posts.html'));
+});
+
+// 前端判断当前身份（显示发帖按钮用）
+app.get('/api/admin-check', (req, res) => {
+  res.json({ admin: isAdmin(req), member: isMember(req) });
+});
+
+app.get('/member', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'member.html'));
+});
+
+// 帖子墙图片上传（独立目录，不随每日清理删除；需 admin 密码，种 admin cookie）
+app.post('/upload-post', (req, res, next) => {
+  if (req.query.pw !== ADMIN_PASSWORD) {
+    return res.status(403).json({ error: '密码错误' });
+  }
+  res.cookie(ADMIN_COOKIE, ADMIN_PASSWORD, { httpOnly: true, maxAge: 30 * 24 * 3600 * 1000, sameSite: 'lax' });
+  next();
+}, uploadPost.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '未上传文件' });
+  res.json({ url: '/posts-media/' + req.file.filename });
+});
+
+// 帖子图片保护：仅已登录会员/管理员可访问（<img> 自动带 cookie）
+app.use('/posts-media', (req, res, next) => {
+  if (!canAccessPosts(req)) {
+    return res.status(401).send('需要会员密码');
+  }
+  next();
+});
+app.use('/posts-media', express.static(POSTS_MEDIA_DIR, { maxAge: '30d', etag: true, lastModified: true }));
+
+// 帖子墙 API（会员/管理员登录后可见）
+app.get('/api/posts', (req, res) => {
+  if (!canAccessPosts(req)) {
+    return res.status(401).json({ error: '需要会员密码' });
+  }
+  res.json(loadPosts());
+});
+
+// admin 网页表单发帖（校验 ADMIN_PASSWORD）
+app.post('/api/posts', (req, res) => {
+  if (req.query.pw !== ADMIN_PASSWORD) {
+    return res.status(403).json({ error: '密码错误' });
+  }
+  const { text, image } = req.body || {};
+  if (!text && !image) return res.status(400).json({ error: '内容为空' });
+  const post = addPost({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    text: (text || '').trim(),
+    image: image || '',
+    author: 'admin',
+    time: new Date().toISOString()
+  });
+  res.json({ ok: true, post });
 });
 
 // ─── Cookie -> Topic mapping (persistent) ────────────────────
@@ -536,6 +679,55 @@ io.on('connection', (socket) => {
   }
 });
 
+// ─── 会员群 (member room) ─────────────────────────────────
+const memberNS = io.of('/member');
+
+memberNS.on('connection', (socket) => {
+  const pw = socket.handshake.query.pw || '';
+  const nick = (socket.handshake.query.nick || '').toString().slice(0, 20);
+  if (pw !== MEMBER_PASSWORD) {
+    socket.emit('member-auth-fail', { message: '密码错误' });
+    socket.disconnect(true);
+    return;
+  }
+  const member = {
+    id: socket.id,
+    nick: nick || '会员' + Math.floor(100 + Math.random() * 900),
+    color: colors[Math.floor(Math.random() * colors.length)],
+  };
+  memberNS.emit('member-joined', { id: socket.id, nick: member.nick, color: member.color });
+  console.log('Member joined:', member.nick, socket.id);
+
+  socket.on('member-message', (data) => {
+    const text = (data && data.text || '').toString().slice(0, 2000);
+    const type = data && data.type || 'text';
+    const url = data && data.url || '';
+    if (!text && !url) return;
+    const payload = { id: socket.id, nick: member.nick, color: member.color, text, type, url, time: Date.now() };
+    memberNS.emit('member-message', payload);
+    // TG 转发到会员话题
+    if (MEMBER_TOPIC_ID) {
+      if (type === 'image' && url) {
+        const imgPath = path.join(UPLOADS_DIR, path.basename(url));
+        if (fs.existsSync(imgPath)) {
+          tgSendPhoto(TELEGRAM_CHAT_ID, MEMBER_TOPIC_ID, imgPath, text).catch(() => {});
+        }
+      } else if (text) {
+        tgAPI('sendMessage', {
+          chat_id: TELEGRAM_CHAT_ID,
+          message_thread_id: MEMBER_TOPIC_ID,
+          text: `👤 ${member.nick}: ${text}`
+        }).catch(() => {});
+      }
+    }
+  });
+
+  socket.on('disconnect', () => {
+    memberNS.emit('member-left', { id: socket.id });
+    console.log('Member left:', member.nick);
+  });
+});
+
 // ─── Create/Reuse Telegram Forum Topic ───────────────────────
 const cookieTopics = loadCookieTopics();
 
@@ -617,11 +809,87 @@ async function pollTelegram() {
   setTimeout(pollTelegram, 1000);
 }
 
+// ─── TG 私聊 → 帖子墙发帖 ────────────────────────────────
+function handleTGPostToWall(msg) {
+  const text = msg.text || msg.caption || '';
+  const hasPhoto = msg.photo && msg.photo.length > 0;
+  if (!text && !hasPhoto) return;
+  const author = (msg.from && (msg.from.username ? '@' + msg.from.username : msg.from.first_name)) || 'TG用户';
+
+  const doAdd = (image) => {
+    addPost({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      text: text.trim(),
+      image: image || '',
+      author,
+      time: new Date().toISOString()
+    });
+    tgAPI('sendMessage', {
+      chat_id: msg.chat.id,
+      text: '✅ 已发布到帖子墙'
+    }).catch(() => {});
+    console.log('[posts] TG 发帖:', author, text.slice(0, 30));
+  };
+
+  if (hasPhoto) {
+    const photo = msg.photo[msg.photo.length - 1];
+    downloadTGFile(photo.file_id, POSTS_MEDIA_DIR).then(imgUrl => {
+      if (imgUrl) doAdd(imgUrl);
+      else console.error('[posts] TG 图片下载失败');
+    });
+    return;
+  }
+  doAdd('');
+}
+
+// ─── TG 会员话题 → 广播给网页端会员 ──────────────────────
+function handleTGMemberMessage(msg) {
+  const text = msg.text || msg.caption || '';
+  const hasPhoto = msg.photo && msg.photo.length > 0;
+  if (!text && !hasPhoto) return;
+  const sender = (msg.from && (msg.from.username ? '@' + msg.from.username : msg.from.first_name)) || '管理员';
+  const payload = (type, url) => ({
+    id: 'tg-' + msg.message_id,
+    nick: sender,
+    color: '#2563eb',
+    text,
+    type,
+    url: url || '',
+    time: Date.now()
+  });
+
+  if (hasPhoto) {
+    const photo = msg.photo[msg.photo.length - 1];
+    downloadTGFile(photo.file_id).then(imgUrl => {
+      if (imgUrl) {
+        memberNS.emit('member-message', payload('image', imgUrl));
+      } else {
+        console.error('[member] TG 图片下载失败');
+      }
+    });
+    return;
+  }
+  memberNS.emit('member-message', payload('text', ''));
+}
+
 function handleTGMessage(msg) {
   if (!msg) return;
-  if (String(msg.chat.id) !== TELEGRAM_CHAT_ID) return;
   if (msg.from && msg.from.is_bot) return;
+
+  // 私聊 → 帖子墙发帖（TG 跟我说通道）
+  if (msg.chat && msg.chat.type === 'private') {
+    handleTGPostToWall(msg);
+    return;
+  }
+
+  if (String(msg.chat.id) !== TELEGRAM_CHAT_ID) return;
   if (!msg.message_thread_id) return;
+
+  // 会员群话题消息 → 广播给网页端会员
+  if (MEMBER_TOPIC_ID && String(msg.message_thread_id) === String(MEMBER_TOPIC_ID)) {
+    handleTGMemberMessage(msg);
+    return;
+  }
 
   const visitorId = topicVisitors.get(msg.message_thread_id);
   if (!visitorId) return;
