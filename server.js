@@ -936,6 +936,7 @@ function handleTGPostToWall(msg) {
       text: text.trim(),
       image: image || '',
       author: authorName,
+      tgMsgId: msg.message_id || null,
       time: new Date().toISOString()
     });
     const reply = {
@@ -1012,6 +1013,30 @@ function handleTGMessage(msg) {
 
   // 帖子墙壁话题 → 自动上墙（管理员发帖通道）
   if (POSTS_TOPIC_ID && String(msg.message_thread_id) === String(POSTS_TOPIC_ID)) {
+    // 回复"删"指令：删除被回复的那条帖子
+    const delText = (msg.text || '').trim();
+    if (msg.reply_to_message && ['删', '删除', 'del', '/del', '删掉'].includes(delText.toLowerCase())) {
+      const targetTgId = msg.reply_to_message.message_id;
+      const posts = loadPosts();
+      const idx = posts.findIndex(p => String(p.tgMsgId) === String(targetTgId));
+      if (idx !== -1) {
+        posts.splice(idx, 1);
+        savePosts(posts);
+        tgAPI('sendMessage', {
+          chat_id: msg.chat.id,
+          message_thread_id: msg.message_thread_id,
+          text: '🗑️ 帖子已删除'
+        }).catch(() => {});
+        console.log('[posts] TG 删除帖子 tgMsgId=' + targetTgId);
+      } else {
+        tgAPI('sendMessage', {
+          chat_id: msg.chat.id,
+          message_thread_id: msg.message_thread_id,
+          text: '⚠️ 没找到对应帖子（可能是旧帖子，没有记录 TG 消息 ID）'
+        }).catch(() => {});
+      }
+      return;
+    }
     handleTGPostToWall(msg);
     return;
   }
