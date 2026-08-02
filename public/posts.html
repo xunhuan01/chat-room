@@ -21,6 +21,9 @@
   .post img { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; cursor: zoom-in; }
   .empty { text-align: center; color: #aaa; font-size: 14px; padding: 60px 0; }
 
+  .post-del { float: right; border: none; background: #f5f5f5; color: #999; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
+  .post-del:hover { background: #fee; color: #e55; }
+
   /* 会员密码门 */
   .gate { position: fixed; inset: 0; background: #f7f7f7; display: flex; align-items: center; justify-content: center; z-index: 200; }
   .gate-card { background: #fff; border-radius: 14px; padding: 32px 28px; width: 85%; max-width: 320px; text-align: center; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
@@ -130,11 +133,19 @@
     } catch (e) { return ""; }
   }
 
-  function renderPosts(posts) {
+  async function renderPosts(posts) {
     if (!posts || !posts.length) {
       list.innerHTML = '<div class="empty">还没有帖子，来发第一帖吧</div>';
       return;
     }
+    // 是否管理员（显示删除按钮）
+    let isAdmin = false;
+    try {
+      const r = await fetch("/api/admin-check");
+      const d = await r.json();
+      isAdmin = !!d.admin;
+    } catch (e) {}
+
     list.innerHTML = posts.map(p => `
       <div class="post">
         <div class="meta">
@@ -143,11 +154,29 @@
             <div class="author">${esc(p.author === "admin" ? "焦羽" : p.author)}</div>
             <div class="time">${fmtTime(p.time)}</div>
           </div>
+          ${isAdmin ? `<button class="post-del" data-id="${esc(p.id)}">删除</button>` : ""}
         </div>
         ${p.text ? `<div class="text">${esc(p.text)}</div>` : ""}
         ${p.image ? `<img src="${esc(p.image)}" onclick="window.open(this.src)" alt="">` : ""}
       </div>
     `).join("");
+    // 删除按钮事件
+    list.querySelectorAll(".post-del").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.id;
+        if (!confirm("确定删除这条帖子吗？")) return;
+        try {
+          const resp = await fetch("/api/posts/" + id, { method: "DELETE" });
+          if (resp.ok) {
+            loadPosts();
+          } else {
+            alert("删除失败：无权限或帖子不存在");
+          }
+        } catch (e) {
+          alert("删除失败，请重试");
+        }
+      });
+    });
   }
 
   async function loadPosts() {

@@ -491,6 +491,20 @@ app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
+// 帖子墙删除（仅管理员）
+app.delete('/api/posts/:id', (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ error: '仅管理员可删除' });
+  }
+  const id = req.params.id;
+  const posts = loadPosts();
+  const idx = posts.findIndex(p => p.id === id);
+  if (idx === -1) return res.status(404).json({ error: '帖子不存在' });
+  posts.splice(idx, 1);
+  savePosts(posts);
+  res.json({ ok: true });
+});
+
 // ─── 帖子墙 + 会员群 页面路由 ─────────────────────────────
 const crypto = require('crypto');
 const MEMBER_AUTH_HASH = crypto.createHash('sha256').update(MEMBER_PASSWORD).digest('hex');
@@ -912,13 +926,16 @@ function handleTGPostToWall(msg) {
   const hasPhoto = msg.photo && msg.photo.length > 0;
   if (!text && !hasPhoto) return;
   const author = (msg.from && (msg.from.username ? '@' + msg.from.username : msg.from.first_name)) || 'TG用户';
+  // 管理员（焦羽本人）显示为"焦羽"
+  const TG_ADMIN = 'fuck001';
+  const authorName = (msg.from && msg.from.username === TG_ADMIN) ? '焦羽' : author;
 
   const doAdd = (image) => {
     addPost({
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
       text: text.trim(),
       image: image || '',
-      author,
+      author: authorName,
       time: new Date().toISOString()
     });
     const reply = {
@@ -946,7 +963,9 @@ function handleTGMemberMessage(msg) {
   const text = msg.text || msg.caption || '';
   const hasPhoto = msg.photo && msg.photo.length > 0;
   if (!text && !hasPhoto) return;
-  const sender = (msg.from && (msg.from.username ? '@' + msg.from.username : msg.from.first_name)) || '管理员';
+  const senderRaw = (msg.from && (msg.from.username ? '@' + msg.from.username : msg.from.first_name)) || '管理员';
+  // 管理员（焦羽本人）显示为"焦羽"
+  const sender = (msg.from && msg.from.username === 'fuck001') ? '焦羽' : senderRaw;
   const payload = (type, url) => ({
     id: 'tg-' + msg.message_id,
     memberId: 'tg',
