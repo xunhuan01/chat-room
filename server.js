@@ -524,11 +524,59 @@ function canAccessPosts(req) {
 
 // 会员登录（帖子墙真锁入口）
 const MEMBER_COOKIE_MAXAGE = 10 * 365 * 24 * 3600 * 1000;  // 10年 ≈ 永久
+const LOGIN_FAIL_FILE = path.join(DATA_DIR, 'login_fails.json');
+const MAX_LOGIN_ATTEMPTS = 10;             // 最多尝试次数
+const LOCK_DURATION = 7 * 24 * 3600 * 1000; // 锁定 7 天
+
+// 真实 IP（Cloudflare Tunnel 用 CF-Connecting-IP，防伪造）
+function getClientIP(req) {
+  return req.headers['cf-connecting-ip'] || req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
+}
+
+function loadLoginFails() {
+  try {
+    if (!fs.existsSync(LOGIN_FAIL_FILE)) return {};
+    return JSON.parse(fs.readFileSync(LOGIN_FAIL_FILE, 'utf8')) || {};
+  } catch (e) { return {}; }
+}
+
+function saveLoginFails(fails) {
+  try { fs.writeFileSync(LOGIN_FAIL_FILE, JSON.stringify(fails, null, 2)); } catch (e) {}
+}
+
 app.post('/api/member-login', (req, res) => {
   const { pw } = req.body || {};
-  if (pw !== MEMBER_PASSWORD) {
-    return res.status(403).json({ error: '密码错误' });
+  const ip = getClientIP(req);
+  const fails = loadLoginFails();
+  const rec = fails[ip] || { count: 0, lockedUntil: 0 };
+
+  // 锁定期内：直接拒绝（正确密码也不行）
+  if (rec.lockedUntil > Date.now()) {
+    const daysLeft = Math.ceil((rec.lockedUntil - Date.now()) / 86400000);
+    return res.status(429).json({ error: `尝试次数过多，已锁定${daysLeft}天后可再试` });
   }
+  // 锁定已过期：清零重新开始
+  if (rec.lockedUntil > 0) {
+    rec.count = 0;
+    rec.lockedUntil = 0;
+  }
+
+  if (pw !== MEMBER_PASSWORD) {
+    rec.count++;
+    if (rec.count >= MAX_LOGIN_ATTEMPTS) {
+      rec.lockedUntil = Date.now() + LOCK_DURATION;
+      rec.count = 0;
+      console.log(`[lock] IP ${ip} 密码尝试${MAX_LOGIN_ATTEMPTS}次失败，锁定7天`);
+    }
+    fails[ip] = rec;
+    saveLoginFails(fails);
+    const remaining = MAX_LOGIN_ATTEMPTS - rec.count;
+    return res.status(403).json({ error: rec.lockedUntil > Date.now() ? '尝试次数过多，已锁定7天' : `密码错误（还可尝试${remaining}次）` });
+  }
+
+  // 成功：清除该 IP 的失败记录
+  delete fails[ip];
+  saveLoginFails(fails);
   res.cookie(MEMBER_COOKIE, MEMBER_AUTH_HASH, { httpOnly: true, maxAge: MEMBER_COOKIE_MAXAGE, sameSite: 'lax', secure: true });
   res.json({ ok: true });
 });
