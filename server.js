@@ -827,15 +827,12 @@ io.on('connection', (socket) => {
       console.log('Visitor left: ' + (v ? v.name : socket.id));
       io.emit('visitor-left', { visitorId: socket.id });
 
+      // 清理话题映射（防内存泄漏）
+      // 下线：不提醒（上线才提醒）
       const topic = visitorTopics.get(socket.id);
       if (topic) {
-        // 下线：时间框风格静默消息（不响铃）
-        tgAPI('sendMessage', {
-          chat_id: TELEGRAM_CHAT_ID,
-          message_thread_id: topic.topicId,
-          text: `┄ 下线 · ${fmtClock()} ┄\n⚪ ${topic.name} 已离开对话`,
-          disable_notification: true,
-        }).catch(() => {});
+        visitorTopics.delete(socket.id);
+        topicVisitors.delete(topic.topicId);
       }
     });
   }
