@@ -84,6 +84,12 @@ function getClientIP(socket) {
   return (ip || '').replace('::ffff:', '');
 }
 
+// 当前时间 HH:MM（用于时间框消息）
+function fmtClock() {
+  const d = new Date();
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
 function getIPLocation(ip) {
   if (!ip || ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return Promise.resolve(null);
   const cached = ipLocationCache.get(ip);
@@ -823,11 +829,12 @@ io.on('connection', (socket) => {
 
       const topic = visitorTopics.get(socket.id);
       if (topic) {
-        // 下线：话题标题 🟢 → ⚪（零消息，仅标题状态）
-        tgAPI('renameForumTopic', {
+        // 下线：时间框风格静默消息（不响铃）
+        tgAPI('sendMessage', {
           chat_id: TELEGRAM_CHAT_ID,
           message_thread_id: topic.topicId,
-          name: `⚪ ${topic.name}`,
+          text: `┄ 下线 · ${fmtClock()} ┄\n⚪ ${topic.name} 已离开对话`,
+          disable_notification: true,
         }).catch(() => {});
       }
     });
@@ -905,6 +912,8 @@ const cookieTopics = loadCookieTopics();
 
 async function createTopicForVisitor(visitor, socketId, clientIP) {
   const legacyId = visitor.legacyId;
+  const loc = await getIPLocation(clientIP);
+  const locText = loc ? `\n📍 ${loc}` : '';
 
   // Already has a persistent topic for this cookie
   if (legacyId && cookieTopics[legacyId]) {
@@ -912,11 +921,12 @@ async function createTopicForVisitor(visitor, socketId, clientIP) {
     visitorTopics.set(socketId, { topicId, name: visitor.name, legacyId: visitor.legacyId });
     topicVisitors.set(topicId, socketId);
 
-    // 上线：话题标题标 🟢（零消息，仅标题状态）
-    tgAPI('renameForumTopic', {
+    // 重新上线：时间框风格静默消息
+    tgAPI('sendMessage', {
       chat_id: TELEGRAM_CHAT_ID,
       message_thread_id: topicId,
-      name: `🟢 ${visitor.name}`,
+      text: `┄ 上线 · ${fmtClock()} ┄\n🟢 ${visitor.name} 重新上线${locText}`,
+      disable_notification: true,
     }).catch(() => {});
     console.log(`Reusing topic: ${visitor.name} → topicId=${topicId}`);
     return;
@@ -926,7 +936,7 @@ async function createTopicForVisitor(visitor, socketId, clientIP) {
   try {
     const res = await tgAPI('createForumTopic', {
       chat_id: TELEGRAM_CHAT_ID,
-      name: `🟢 ${visitor.name}`,
+      name: visitor.name,
       icon_color: 0x6FB9F0,
     });
     if (!res.ok) {
@@ -941,6 +951,14 @@ async function createTopicForVisitor(visitor, socketId, clientIP) {
       cookieTopics[legacyId] = topicId;
       saveCookieTopics(cookieTopics);
     }
+
+    // 上线：时间框风格静默消息
+    await tgAPI('sendMessage', {
+      chat_id: TELEGRAM_CHAT_ID,
+      message_thread_id: topicId,
+      text: `┄ 上线 · ${fmtClock()} ┄\n🟢 ${visitor.name} 加入了对话${locText}`,
+      disable_notification: true,
+    }).catch(() => {});
     console.log('Topic created: ' + visitor.name + ' -> topicId=' + topicId + ' (cookie=' + legacyId + ')');
   } catch (err) {
     console.error('Failed to create topic:', err.message);
