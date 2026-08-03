@@ -32,6 +32,11 @@
   .msg .nick { font-size: 11px; color: #aaa; margin: 0 4px 3px; }
   .msg .bubble { background: #fff; border-radius: 10px; padding: 9px 13px; font-size: 14px; line-height: 1.6; color: #333; word-break: break-word; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
   .msg .bubble img { max-width: 220px; max-height: 280px; border-radius: 8px; display: block; cursor: pointer; }
+  .msg .bubble .img-ph { position: relative; display: inline-block; }
+  .msg .bubble .img-ph img { opacity: 0.35; }
+  .msg .bubble .img-ph .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: rgba(0,0,0,0.08); border-radius: 8px; color: #666; font-size: 12px; }
+  .spinner { width: 18px; height: 18px; border: 2px solid rgba(0,0,0,0.15); border-top-color: #2563eb; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .msg .time { font-size: 10px; color: #ccc; margin: 3px 4px 0; }
   .msg.me { flex-direction: row-reverse; }
   .msg.me .avatar { margin-right: 0; margin-left: 8px; }
@@ -237,19 +242,111 @@
   document.getElementById("sendBtn").onclick = sendText;
   msgInput.addEventListener("keydown", e => { if (e.key === "Enter") sendText(); });
 
-  // 发图
+  // 发图（本地压缩 + 即时占位 + 上传进度，仿客服系统）
   document.getElementById("imgBtn").onclick = () => fileInput.click();
+
+  // 本地压缩（>200KB 才压，1280px 内）
+  function compressImage(file, maxW = 1280, maxH = 1280, quality = 0.7) {
+    if (file.size < 200 * 1024) return Promise.resolve(file);
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        let w = img.width, h = img.height;
+        if (w > maxW || h > maxH) {
+          const ratio = Math.min(maxW / w, maxH / h);
+          w = Math.round(w * ratio); h = Math.round(h * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        const outType = file.type === "image/png" ? "image/png" : "image/jpeg";
+        canvas.toBlob((blob) => {
+          if (!blob) { resolve(file); return; }
+          const newName = file.name.replace(/\.[^.]+$/, outType === "image/png" ? ".png" : ".jpg");
+          resolve(new File([blob], newName, { type: outType }));
+        }, outType, quality);
+      };
+      img.onerror = () => resolve(file);
+      img.src = url;
+    });
+  }
+
+  // 取自己的头像（从已显示的消息里找）
+  function getMyAvatar() {
+    const rows = msgList.querySelectorAll(".msg.me .avatar");
+    for (const r of rows) {
+      const em = r.textContent.trim();
+      if (em) return em;
+    }
+    return "😀";
+  }
+
   fileInput.onchange = async () => {
     const file = fileInput.files[0];
-    if (!file || !socket) return;
-    const form = new FormData();
-    form.append("image", file);
-    try {
-      const resp = await fetch("/upload", { method: "POST", body: form });
-      const data = await resp.json();
-      if (data.url) socket.emit("member-message", { type: "image", url: data.url, text: "" });
-    } catch (e) {}
     fileInput.value = "";
+    if (!file || !socket) return;
+
+    // 1. 立即显示本地占位（半透明 + 转圈 + 发送中）
+    const localUrl = URL.createObjectURL(file);
+    const ph = document.createElement("div");
+    ph.className = "msg me";
+    ph.innerHTML = `
+      <div class="avatar" style="background:#f0f0f0">${getMyAvatar()}</div>
+      <div class="bubble-wrap">
+        <div class="bubble"><div class="img-ph"><img src="${localUrl}" alt="图片"><div class="overlay"><span class="spinner"></span><span>发送中…</span></div></div></div>
+        <div class="time">${fmtTime(Date.now())}</div>
+      </div>`;
+    msgList.appendChild(ph);
+    msgList.scrollTop = msgList.scrollHeight;
+
+    try {
+      // 2. 本地压缩（手机大图先压小，上传快）
+      const compressed = await compressImage(file);
+      const form = new FormData();
+      form.append("image", compressed);
+
+      // 3. XHR 上传，带进度百分比
+      const data = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            const ov = ph.querySelector(".overlay");
+            if (ov) ov.innerHTML = `<span class="spinner"></span><span>${pct}%</span>`;
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try { resolve(JSON.parse(xhr.responseText)); }
+            catch (e) { reject(new Error("响应解析失败")); }
+          } else reject(new Error("HTTP " + xhr.status));
+        };
+        xhr.onerror = () => reject(new Error("网络错误"));
+        xhr.open("POST", "/upload", true);
+        xhr.send(form);
+      });
+
+      // 4. 上传成功：发送群消息 + 占位换成正式图
+      if (data.url) {
+        socket.emit("member-message", { type: "image", url: data.url, text: "" });
+        ph.querySelector(".bubble").innerHTML = `<img src="${data.url}" onclick="window.open(this.src)" alt="图片">`;
+        URL.revokeObjectURL(localUrl);
+      } else {
+        throw new Error(data.error || "上传失败");
+      }
+    } catch (e) {
+      // 失败：占位标红提示
+      const ov = ph.querySelector(".overlay");
+      if (ov) ov.innerHTML = `<span style="color:#ef4444">发送失败，点击重试</span>`;
+      ph.querySelector(".img-ph").style.cursor = "pointer";
+      ph.querySelector(".img-ph").onclick = () => {
+        ph.remove();
+        URL.revokeObjectURL(localUrl);
+        fileInput.onchange({ target: { files: [file] } });
+      };
+    }
   };
 </script>
 </body>
