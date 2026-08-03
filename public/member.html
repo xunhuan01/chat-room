@@ -210,6 +210,11 @@
       if (m.id !== socket.id) addSystem("有人离开了群聊");
     });
     socket.on("member-message", (m) => {
+      // 自己刚发的图片：占位已显示，跳过广播重复渲染
+      if (m.type === "image" && pendingImgUrls.has(m.url)) {
+        pendingImgUrls.delete(m.url);
+        return;
+      }
       const isMe = m.memberId === memberId;
       addMsg(m.nick, m.avatar, m.bg, m.color, m.text, m.type, m.url, m.time, isMe);
     });
@@ -243,6 +248,7 @@
   msgInput.addEventListener("keydown", e => { if (e.key === "Enter") sendText(); });
 
   // 发图（本地压缩 + 即时占位 + 上传进度，仿客服系统）
+  const pendingImgUrls = new Set(); // 自己刚发的图片 url（占位已显示，防广播重复渲染）
   document.getElementById("imgBtn").onclick = () => fileInput.click();
 
   // 本地压缩（>200KB 才压，1280px 内）
@@ -330,6 +336,7 @@
 
       // 4. 上传成功：发送群消息 + 占位换成正式图
       if (data.url) {
+        pendingImgUrls.add(data.url); // 登记：广播回来时跳过（占位已显示）
         socket.emit("member-message", { type: "image", url: data.url, text: "" });
         ph.querySelector(".bubble").innerHTML = `<img src="${data.url}" onclick="window.open(this.src)" alt="图片">`;
         URL.revokeObjectURL(localUrl);
