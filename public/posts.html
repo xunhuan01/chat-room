@@ -25,7 +25,7 @@
   .post-del:hover { background: #fee; color: #e55; }
 
   /* 会员密码门 */
-  .gate { position: fixed; inset: 0; background: #f7f7f7; display: flex; align-items: center; justify-content: center; z-index: 200; }
+  .gate { position: fixed; inset: 0; background: #f7f7f7; display: none; align-items: center; justify-content: center; z-index: 200; }
   .gate-card { background: #fff; border-radius: 14px; padding: 32px 28px; width: 85%; max-width: 320px; text-align: center; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
   .gate-card .icon { font-size: 40px; margin-bottom: 10px; }
   .gate-card h3 { font-size: 17px; margin-bottom: 6px; }
@@ -188,6 +188,8 @@
         gatePw.focus();
         return;
       }
+      // 已登录：确保密码门隐藏
+      gate.style.display = "none";
       const posts = await resp.json();
       renderPosts(posts);
     } catch (e) {

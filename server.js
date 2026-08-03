@@ -575,11 +575,6 @@ app.use('/posts-media', express.static(POSTS_MEDIA_DIR, { maxAge: '30d', etag: t
 
 // 帖子墙 API（会员/管理员登录后可见）
 app.get('/api/posts', (req, res) => {
-  // 诊断日志：查看请求的 cookie 状态
-  const hasCookie = !!(req.cookies && req.cookies[MEMBER_COOKIE]);
-  const cookieVal = hasCookie ? String(req.cookies[MEMBER_COOKIE]).slice(0, 8) : '无';
-  const expectVal = MEMBER_AUTH_HASH.slice(0, 8);
-  console.log(`[diag] /api/posts cookie=${hasCookie ? '有' : '无'} 值=${cookieVal} 期望=${expectVal} 匹配=${hasCookie && req.cookies[MEMBER_COOKIE] === MEMBER_AUTH_HASH}`);
   if (!isMember(req) && !isAdmin(req)) {
     return res.status(401).json({ error: '需要会员密码' });
   }
