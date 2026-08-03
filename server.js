@@ -529,8 +529,20 @@ const MAX_LOGIN_ATTEMPTS = 10;             // 最多尝试次数
 const LOCK_DURATION = 7 * 24 * 3600 * 1000; // 锁定 7 天
 
 // 真实 IP（Cloudflare Tunnel 用 CF-Connecting-IP，防伪造）
+// 兼容两种入参：Express req 或 Socket.IO socket
 function getClientIP(req) {
-  return req.headers['cf-connecting-ip'] || req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
+  try {
+    // Socket.IO socket → handshake.headers / handshake.address
+    if (req && req.handshake) {
+      const h = req.handshake.headers || {};
+      return h['cf-connecting-ip'] || (req.handshake.address || 'unknown');
+    }
+    // Express req
+    if (req && req.headers) {
+      return req.headers['cf-connecting-ip'] || req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
+    }
+  } catch (e) {}
+  return 'unknown';
 }
 
 function loadLoginFails() {

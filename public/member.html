@@ -13,7 +13,7 @@
   .top-bar .member-count { font-size: 12px; color: #aaa; }
 
   /* 密码门 */
-  .gate { position: fixed; inset: 0; background: #f7f7f7; display: flex; align-items: center; justify-content: center; z-index: 50; }
+  .gate { position: fixed; inset: 0; background: #f7f7f7; display: none; align-items: center; justify-content: center; z-index: 50; }
   .gate-card { background: #fff; border-radius: 14px; padding: 32px 28px; width: 85%; max-width: 320px; text-align: center; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
   .gate-card .icon { font-size: 40px; margin-bottom: 10px; }
   .gate-card h3 { font-size: 17px; margin-bottom: 6px; }
@@ -173,8 +173,11 @@
   document.getElementById("enterBtn").onclick = enter;
   pwInput.addEventListener("keydown", e => { if (e.key === "Enter") enter(); });
 
-  // 连接会员群 Socket
+  // 连接会员群 Socket（防重复连接）
+  let connecting = false;
   function connectMember() {
+    if (connecting) return;
+    connecting = true;
     socket = io("/member", { query: { pw: pwInput.value.trim(), memberId } });
     socket.on("member-auth-fail", () => {
       gateErr.style.display = "block";
@@ -207,13 +210,22 @@
     });
   }
 
-  // 页面加载：检查是否已登录（cookie 30 天内免密）
+  // 页面加载：先检查是否已登录（cookie 免密），再决定显示密码门还是直接进
+  // 避免与密码门并发验证造成"弹错误又进入"的竞态
   fetch("/api/admin-check").then(r => r.json()).then(data => {
     if (data.member) {
       // 已登录：直接进，不弹密码门
       connectMember();
+    } else {
+      // 未登录：显示密码门
+      gate.style.display = "flex";
+      gatePw.focus();
     }
-  }).catch(() => {});
+  }).catch(() => {
+    // 检查失败（如网络中断）：显示密码门让用户手动尝试
+    gate.style.display = "flex";
+    gatePw.focus();
+  });
 
   // 发送
   function sendText() {
