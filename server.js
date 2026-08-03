@@ -1001,7 +1001,7 @@ function handleTGPostToWall(msg) {
     });
     const reply = {
       chat_id: msg.chat.id,
-      text: '✅ 已发布到帖子墙'
+      text: '✅ 已发布到资源墙'
     };
     if (msg.message_thread_id) reply.message_thread_id = msg.message_thread_id;
     tgAPI('sendMessage', reply).catch(() => {});
