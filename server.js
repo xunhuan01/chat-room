@@ -823,11 +823,11 @@ io.on('connection', (socket) => {
 
       const topic = visitorTopics.get(socket.id);
       if (topic) {
-        tgAPI('sendMessage', {
+        // 下线：话题标题 🟢 → ⚪（零消息，仅标题状态）
+        tgAPI('renameForumTopic', {
           chat_id: TELEGRAM_CHAT_ID,
           message_thread_id: topic.topicId,
-          text: `🚪 ${topic.name} 已离开对话`,
-          disable_notification: true, // 静默：不响铃不震动
+          name: `⚪ ${topic.name}`,
         }).catch(() => {});
       }
     });
@@ -905,8 +905,6 @@ const cookieTopics = loadCookieTopics();
 
 async function createTopicForVisitor(visitor, socketId, clientIP) {
   const legacyId = visitor.legacyId;
-  const loc = await getIPLocation(clientIP);
-  const locText = loc ? `\n📍 ${loc}` : '';
 
   // Already has a persistent topic for this cookie
   if (legacyId && cookieTopics[legacyId]) {
@@ -914,11 +912,11 @@ async function createTopicForVisitor(visitor, socketId, clientIP) {
     visitorTopics.set(socketId, { topicId, name: visitor.name, legacyId: visitor.legacyId });
     topicVisitors.set(topicId, socketId);
 
-    tgAPI('sendMessage', {
+    // 上线：话题标题标 🟢（零消息，仅标题状态）
+    tgAPI('renameForumTopic', {
       chat_id: TELEGRAM_CHAT_ID,
       message_thread_id: topicId,
-      text: `🟢 ${visitor.name} 重新上线${locText}`,
-      disable_notification: true, // 静默：不响铃不震动
+      name: `🟢 ${visitor.name}`,
     }).catch(() => {});
     console.log(`Reusing topic: ${visitor.name} → topicId=${topicId}`);
     return;
@@ -928,7 +926,7 @@ async function createTopicForVisitor(visitor, socketId, clientIP) {
   try {
     const res = await tgAPI('createForumTopic', {
       chat_id: TELEGRAM_CHAT_ID,
-      name: visitor.name,
+      name: `🟢 ${visitor.name}`,
       icon_color: 0x6FB9F0,
     });
     if (!res.ok) {
@@ -943,13 +941,6 @@ async function createTopicForVisitor(visitor, socketId, clientIP) {
       cookieTopics[legacyId] = topicId;
       saveCookieTopics(cookieTopics);
     }
-
-    await tgAPI('sendMessage', {
-      chat_id: TELEGRAM_CHAT_ID,
-      message_thread_id: topicId,
-      text: `🟢 ${visitor.name} 加入了对话${locText}`,
-      disable_notification: true, // 静默：不响铃不震动
-    });
     console.log('Topic created: ' + visitor.name + ' -> topicId=' + topicId + ' (cookie=' + legacyId + ')');
   } catch (err) {
     console.error('Failed to create topic:', err.message);
