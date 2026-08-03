@@ -827,6 +827,7 @@ io.on('connection', (socket) => {
           chat_id: TELEGRAM_CHAT_ID,
           message_thread_id: topic.topicId,
           text: `🚪 ${topic.name} 已离开对话`,
+          disable_notification: true, // 静默：不响铃不震动
         }).catch(() => {});
       }
     });
@@ -917,6 +918,7 @@ async function createTopicForVisitor(visitor, socketId, clientIP) {
       chat_id: TELEGRAM_CHAT_ID,
       message_thread_id: topicId,
       text: `🟢 ${visitor.name} 重新上线${locText}`,
+      disable_notification: true, // 静默：不响铃不震动
     }).catch(() => {});
     console.log(`Reusing topic: ${visitor.name} → topicId=${topicId}`);
     return;
@@ -946,6 +948,7 @@ async function createTopicForVisitor(visitor, socketId, clientIP) {
       chat_id: TELEGRAM_CHAT_ID,
       message_thread_id: topicId,
       text: `🟢 ${visitor.name} 加入了对话${locText}`,
+      disable_notification: true, // 静默：不响铃不震动
     });
     console.log('Topic created: ' + visitor.name + ' -> topicId=' + topicId + ' (cookie=' + legacyId + ')');
   } catch (err) {
