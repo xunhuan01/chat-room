@@ -426,6 +426,54 @@ async function compressImageWithSharp(savePath) {
   }
 }
 
+// ─── Video compress via ffmpeg ─────────────────────────────
+const VIDEO_EXTS = ['.mp4', '.webm', '.mov', '.m4v'];
+const FFMPEG_BIN = process.env.FFMPEG_PATH || 'ffmpeg';
+
+function isVideoFile(filePath) {
+  return VIDEO_EXTS.includes(path.extname(filePath).toLowerCase());
+}
+
+async function compressVideoWithFFmpeg(filePath) {
+  const size = fs.statSync(filePath).size;
+  if (size < 200 * 1024) return;  // 小于200KB的小视频不压
+  const tmpPath = filePath + '.tmp.mp4';
+  const args = [
+    '-y', '-i', filePath,
+    '-c:v', 'libx264', '-crf', '23', '-preset', 'veryfast',
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '128k',
+    '-movflags', '+faststart',
+    tmpPath
+  ];
+  return new Promise((resolve) => {
+    const proc = require('child_process').execFile(FFMPEG_BIN, args, { timeout: 10 * 60 * 1000 }, (err) => {
+      if (err) {
+        console.error('[ffmpeg] compress failed for', path.basename(filePath), ':', err.message.slice(0, 120));
+        try { fs.unlinkSync(tmpPath); } catch {}
+        resolve(false);  // 压缩失败用原文件
+        return;
+      }
+      try {
+        const compressedSize = fs.statSync(tmpPath).size;
+        if (compressedSize < size) {
+          fs.renameSync(tmpPath, filePath);
+          console.log('[ffmpeg] compressed', path.basename(filePath), (size/1048576).toFixed(1) + 'MB', '->', (compressedSize/1048576).toFixed(1) + 'MB');
+          resolve(true);
+        } else {
+          fs.unlinkSync(tmpPath);
+          console.log('[ffmpeg] kept original', path.basename(filePath), '(compressed was larger)');
+          resolve(false);
+        }
+      } catch (e) {
+        console.error('[ffmpeg] rename failed:', e.message);
+        try { fs.unlinkSync(tmpPath); } catch {}
+        resolve(false);
+      }
+    });
+  });
+}
+
 // ─── Download Telegram file ───────────────────────────────
 async function downloadTGFile(fileId, targetDir) {
   const dir = targetDir || UPLOADS_DIR;
@@ -457,8 +505,13 @@ async function downloadTGFile(fileId, targetDir) {
         file.close(async () => {
           const size = fs.statSync(savePath).size;
           console.log('downloadTGFile: saved', filename, size + ' bytes');
-          // sharp 压缩（GIF 跳过；压缩后比原图大就保留原图）
-          await compressImageWithSharp(savePath);
+          if (isVideoFile(savePath)) {
+            // 视频：ffmpeg 压缩（同路径替换，URL 不变）
+            await compressVideoWithFFmpeg(savePath);
+          } else {
+            // 图片：sharp 压缩（GIF 跳过；压缩后比原图大就保留原图）
+            await compressImageWithSharp(savePath);
+          }
           resolve((dir === POSTS_MEDIA_DIR ? '/posts-media/' : '/uploads/') + filename);
         });
       });
@@ -625,10 +678,14 @@ app.post('/upload-post', (req, res, next) => {
   next();
 }, uploadPost.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '未上传文件' });
-  // 图片走 sharp 压缩；视频跳过（sharp 不处理视频）
+  // 图片走 sharp 压缩；视频跳过 sharp、走 ffmpeg 后台压缩
   const ext = path.extname(req.file.filename).toLowerCase();
   if (['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) {
     await compressImageWithSharp(req.file.path);
+  }
+  if (isVideoFile(req.file.path)) {
+    // 后台压缩，不阻塞上传响应；压缩完自动替换同路径文件（URL 不变）
+    compressVideoWithFFmpeg(req.file.path).catch(e => console.error('[ffmpeg] bg compress error:', e.message));
   }
   res.json({ url: '/posts-media/' + req.file.filename });
 });
