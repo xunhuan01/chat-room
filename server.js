@@ -282,12 +282,12 @@ const postStorage = multer.diskStorage({
 });
 const uploadPost = multer({
   storage: postStorage,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+    const allowed = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp4', '.webm', '.mov', '.m4v'];
     const ext = path.extname(file.originalname).toLowerCase();
     if (allowed.includes(ext)) cb(null, true);
-    else cb(new Error('仅允许图片格式'));
+    else cb(new Error('仅支持图片或视频格式'));
   }
 });
 
@@ -366,8 +366,8 @@ app.post('/upload', upload.single('image'), (req, res) => {
   res.json({ url: '/uploads/' + req.file.filename });
 });
 app.use((err, req, res, next) => {
-  if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: '图片太大，最大5MB' });
-  if (err.message === '仅允许图片格式') return res.status(400).json({ error: err.message });
+  if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: '文件太大，超出大小限制' });
+  if (err.message === '仅允许图片格式' || err.message === '仅支持图片或视频格式') return res.status(400).json({ error: err.message });
   next(err);
 });
 
@@ -625,8 +625,11 @@ app.post('/upload-post', (req, res, next) => {
   next();
 }, uploadPost.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '未上传文件' });
-  // 网页上传的图片同样压缩（和 TG 通道一致）
-  await compressImageWithSharp(req.file.path);
+  // 图片走 sharp 压缩；视频跳过（sharp 不处理视频）
+  const ext = path.extname(req.file.filename).toLowerCase();
+  if (['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) {
+    await compressImageWithSharp(req.file.path);
+  }
   res.json({ url: '/posts-media/' + req.file.filename });
 });
 
@@ -652,12 +655,13 @@ app.post('/api/posts', (req, res) => {
   if (req.query.pw !== ADMIN_PASSWORD) {
     return res.status(403).json({ error: '密码错误' });
   }
-  const { text, image } = req.body || {};
-  if (!text && !image) return res.status(400).json({ error: '内容为空' });
+  const { text, image, video } = req.body || {};
+  if (!text && !image && !video) return res.status(400).json({ error: '内容为空' });
   const post = addPost({
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
     text: (text || '').trim(),
     image: image || '',
+    video: video || '',
     author: 'admin',
     time: new Date().toISOString()
   });
@@ -993,17 +997,19 @@ async function pollTelegram() {
 function handleTGPostToWall(msg) {
   const text = msg.text || msg.caption || '';
   const hasPhoto = msg.photo && msg.photo.length > 0;
-  if (!text && !hasPhoto) return;
+  const hasVideo = msg.video && msg.video.file_id;
+  if (!text && !hasPhoto && !hasVideo) return;
   const author = (msg.from && (msg.from.username ? '@' + msg.from.username : msg.from.first_name)) || 'TG用户';
   // 管理员（焦羽本人）显示为"焦羽"
   const TG_ADMIN = 'fuck001';
   const authorName = (msg.from && msg.from.username === TG_ADMIN) ? '焦羽' : author;
 
-  const doAdd = (image) => {
+  const doAdd = (image, video) => {
     addPost({
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
       text: text.trim(),
       image: image || '',
+      video: video || '',
       author: authorName,
       tgMsgId: msg.message_id || null,
       time: new Date().toISOString()
@@ -1025,7 +1031,14 @@ function handleTGPostToWall(msg) {
     });
     return;
   }
-  doAdd('');
+  if (hasVideo) {
+    downloadTGFile(msg.video.file_id, POSTS_MEDIA_DIR).then(videoUrl => {
+      if (videoUrl) doAdd('', videoUrl);
+      else console.error('[posts] TG 视频下载失败');
+    });
+    return;
+  }
+  doAdd('', '');
 }
 
 // ─── TG 会员话题 → 广播给网页端会员 ──────────────────────

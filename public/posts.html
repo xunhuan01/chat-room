@@ -19,6 +19,7 @@
   .post .time { font-size: 11px; color: #aaa; }
   .post .text { font-size: 14px; line-height: 1.7; color: #333; word-break: break-word; }
   .post img { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; cursor: zoom-in; }
+  .post video { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; background: #000; }
   .empty { text-align: center; color: #aaa; font-size: 14px; padding: 60px 0; }
 
   .post-del { float: right; border: none; background: #f5f5f5; color: #999; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
@@ -46,6 +47,8 @@
   .modal .img-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
   .modal .img-btn { background: #f0f0f0; border: none; border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; color: #555; }
   .modal .img-preview { max-width: 90px; max-height: 90px; border-radius: 8px; display: none; }
+  .modal .video-preview { max-width: 160px; max-height: 120px; }
+  .modal .up-status { font-size: 12px; color: #2563eb; display: none; }
   .modal .actions { display: flex; gap: 10px; justify-content: flex-end; }
   .modal .actions button { border: none; border-radius: 8px; padding: 9px 20px; font-size: 14px; cursor: pointer; }
   .modal .cancel { background: #f0f0f0; color: #555; }
@@ -85,9 +88,11 @@
       <input type="password" id="pwInput" placeholder="管理密码" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
       <textarea id="textInput" placeholder="写点什么..."></textarea>
       <div class="img-row">
-        <button class="img-btn" id="imgBtn">📷 添加图片</button>
-        <input type="file" id="fileInput" accept="image/*" style="display:none">
+        <button class="img-btn" id="imgBtn">📷 图片/视频</button>
+        <input type="file" id="fileInput" accept="image/*,video/*" style="display:none">
         <img class="img-preview" id="imgPreview" alt="">
+        <video class="img-preview video-preview" id="videoPreview" controls muted playsinline></video>
+        <span class="up-status" id="upStatus"></span>
       </div>
       <div class="actions">
         <button class="cancel" id="cancelBtn">取消</button>
@@ -104,11 +109,14 @@
   const textInput = document.getElementById("textInput");
   const fileInput = document.getElementById("fileInput");
   const imgPreview = document.getElementById("imgPreview");
+  const videoPreview = document.getElementById("videoPreview");
+  const upStatus = document.getElementById("upStatus");
   const gate = document.getElementById("gate");
   const gatePw = document.getElementById("gatePw");
   const gateErr = document.getElementById("gateErr");
   const postBtn = document.getElementById("postBtn");
   let uploadedUrl = "";
+  let uploadedType = "";  // 'image' | 'video'
 
   const emojiMap = { admin: "👤", tg: "✈️" };
 
@@ -157,6 +165,7 @@
         </div>
         ${p.text ? `<div class="text">${esc(p.text)}</div>` : ""}
         ${p.image ? `<img src="${esc(p.image)}" onclick="window.open(this.src)" alt="">` : ""}
+        ${p.video ? `<video src="${esc(p.video)}" controls playsinline preload="metadata"></video>` : ""}
       </div>
     `).join("");
     // 删除按钮事件
@@ -236,37 +245,75 @@
   // 发帖弹窗
   document.getElementById("postBtn").onclick = () => {
     errBox.style.display = "none";
-    pwInput.value = ""; textInput.value = ""; uploadedUrl = "";
+    pwInput.value = ""; textInput.value = ""; uploadedUrl = ""; uploadedType = "";
     imgPreview.style.display = "none";
+    videoPreview.style.display = "none";
+    videoPreview.removeAttribute("src");
+    upStatus.style.display = "none";
     overlay.classList.add("show");
     pwInput.focus();
   };
   document.getElementById("cancelBtn").onclick = () => overlay.classList.remove("show");
   overlay.onclick = (e) => { if (e.target === overlay) overlay.classList.remove("show"); };
 
-  // 图片选择
+  // 图片/视频选择
   document.getElementById("imgBtn").onclick = () => fileInput.click();
   fileInput.onchange = async () => {
     const file = fileInput.files[0];
     if (!file) return;
+    const isVideo = file.type.startsWith("video/");
+    if (isVideo && file.size > 100 * 1024 * 1024) {
+      errBox.textContent = "视频不能超过100MB";
+      errBox.style.display = "block";
+      fileInput.value = "";
+      return;
+    }
+    // XHR 上传带进度（视频大，必须看进度）
     const form = new FormData();
     form.append("image", file);
-    try {
-      const resp = await fetch("/upload-post", { method: "POST", body: form });
-      const data = await resp.json();
-      if (data.url) {
-        uploadedUrl = data.url;
-        imgPreview.src = data.url;
-        imgPreview.style.display = "block";
-      } else {
-        errBox.textContent = data.error || "图片上传失败";
+    const xhr = new XMLHttpRequest();
+    upStatus.style.display = "inline";
+    upStatus.textContent = "上传中 0%";
+    xhr.open("POST", "/upload-post");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        upStatus.textContent = "上传中 " + Math.round(e.loaded / e.total * 100) + "%";
+      }
+    };
+    xhr.onload = () => {
+      upStatus.style.display = "none";
+      try {
+        const data = JSON.parse(xhr.responseText);
+        if (xhr.status === 200 && data.url) {
+          uploadedUrl = data.url;
+          uploadedType = isVideo ? "video" : "image";
+          if (isVideo) {
+            imgPreview.style.display = "none";
+            videoPreview.src = data.url;
+            videoPreview.style.display = "block";
+          } else {
+            videoPreview.style.display = "none";
+            videoPreview.removeAttribute("src");
+            imgPreview.src = data.url;
+            imgPreview.style.display = "block";
+          }
+        } else {
+          errBox.textContent = data.error || "上传失败";
+          errBox.style.display = "block";
+        }
+      } catch (e) {
+        errBox.textContent = "上传失败";
         errBox.style.display = "block";
       }
-    } catch (e) {
-      errBox.textContent = "图片上传失败";
+      fileInput.value = "";
+    };
+    xhr.onerror = () => {
+      upStatus.style.display = "none";
+      errBox.textContent = "上传失败，请重试";
       errBox.style.display = "block";
-    }
-    fileInput.value = "";
+      fileInput.value = "";
+    };
+    xhr.send(form);
   };
 
   // 发布
@@ -276,10 +323,13 @@
     if (!pw) { errBox.textContent = "请输入管理密码"; errBox.style.display = "block"; return; }
     if (!text && !uploadedUrl) { errBox.textContent = "内容不能为空"; errBox.style.display = "block"; return; }
     try {
+      const body = { text };
+      if (uploadedType === "video") body.video = uploadedUrl;
+      else body.image = uploadedUrl;
       const resp = await fetch("/api/posts?pw=" + encodeURIComponent(pw), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, image: uploadedUrl })
+        body: JSON.stringify(body)
       });
       const data = await resp.json();
       if (!resp.ok || !data.ok) {
