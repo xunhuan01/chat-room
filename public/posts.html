@@ -57,13 +57,13 @@
   .modal .submit { background: #2563eb; color: #fff; }
   .modal .err { color: #ef4444; font-size: 12px; margin-bottom: 10px; display: none; }
   /* 帖子媒体网格（最多4格，固定高度） */
-  .post .media-grid { display: grid; gap: 4px; margin-top: auto; height: 222px; flex-shrink: 0; }
-  .post .media-grid.grid-1 { grid-template-columns: 1fr; height: 222px; }
+  .post .media-grid { display: grid; gap: 4px; margin-top: auto; height: 222px; flex-shrink: 0; grid-template-rows: 1fr; }
+  .post .media-grid.grid-1 { grid-template-columns: 1fr; height: 222px; grid-template-rows: 1fr; }
   .post .media-grid img, .post .media-grid video { width: 100%; height: 100%; object-fit: contain; background: #000; border-radius: 8px; display: block; }
   .post .media-grid img { cursor: zoom-in; }
   .post .media-grid video { cursor: pointer; }
-  .post .video-wrap { position: relative; height: 100%; cursor: pointer; }
-  .post .video-wrap video { width: 100%; height: 100%; }
+  .post .video-wrap { position: relative; cursor: pointer; width: 100%; height: 100%; min-height: 0; }
+  .post .video-wrap video { width: 100%; height: 100%; object-fit: contain; }
   .post .video-wrap .play-badge { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; pointer-events: none; }
   .post .video-wrap .play-badge::before { content: ""; width: 0; height: 0; border-left: 12px solid #fff; border-top: 8px solid transparent; border-bottom: 8px solid transparent; margin-left: 3px; }
   /* 单图/单视频完整显示不变形（不被裁剪） */
