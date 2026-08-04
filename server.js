@@ -25,6 +25,8 @@ const PORT = process.env.PORT || 3000;
 
 // ─── Telegram Bot config ──────────────────────────────────────
 const TELEGRAM_BOT_TOKEN = process.env.BOT_TOKEN || 'PLACEHOLDER_BOT_TOKEN';
+const ALERT_BOT_TOKEN = process.env.ALERT_BOT_TOKEN || '';   // 云端机器人（私聊提醒）
+const ALERT_CHAT_ID = process.env.ALERT_CHAT_ID || '';        // 焦羽私聊 chat_id
 
 const TELEGRAM_CHAT_ID = process.env.GROUP_ID || '-1004384134428';
 const TG_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
@@ -53,6 +55,46 @@ const { HttpProxyAgent } = require('http-proxy-agent');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
 const proxyAgent = new HttpsProxyAgent(PROXY_URL);
+
+// ─── 会员解锁提醒（云端机器人私聊）────────────────────
+const UNLOCK_STATS_FILE = path.join(__dirname, 'data', 'unlock_stats.json');
+let unlockTotal = 0;        // 累计解锁人数（持久化）
+let lastUnlockAlert = 0;    // 上次提醒时间（防重复轰炸）
+
+function loadUnlockStats() {
+  try {
+    if (fs.existsSync(UNLOCK_STATS_FILE)) {
+      const d = JSON.parse(fs.readFileSync(UNLOCK_STATS_FILE, 'utf8'));
+      unlockTotal = d.total || 0;
+    }
+  } catch (e) { console.error('loadUnlockStats:', e.message); }
+}
+function saveUnlockStats() {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(UNLOCK_STATS_FILE, JSON.stringify({ total: unlockTotal }, null, 2));
+  } catch (e) { console.error('saveUnlockStats:', e.message); }
+}
+
+// 会员解锁成功后提醒焦羽（云端机器人私聊）；10分钟内只提醒一次防轰炸
+function notifyMemberUnlock() {
+  if (!ALERT_BOT_TOKEN || !ALERT_CHAT_ID) return;
+  const now = Date.now();
+  if (now - lastUnlockAlert < 10 * 60 * 1000) return;  // 10分钟内不重复提醒
+  lastUnlockAlert = now;
+  unlockTotal++;
+  saveUnlockStats();
+  const text = `有人解锁了会员内容\n（累计 ${unlockTotal} 人）`;
+  const url = `https://api.telegram.org/bot${ALERT_BOT_TOKEN}/sendMessage`;
+  const body = JSON.stringify({ chat_id: ALERT_CHAT_ID, text });
+  const u = new URL(url);
+  const req = https.request({
+    hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
+    agent: proxyAgent, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  }, (res) => { res.resume(); });
+  req.on('error', (e) => console.error('notifyMemberUnlock:', e.message));
+  req.write(body); req.end();
+}
 
 async function tgAPI(method, params = {}) {
   const url = `${TG_API}/${method}`;
@@ -350,6 +392,7 @@ function pruneMemberLogs() {
 }
 // 启动时先跑一次 + 每天 0 点定时清理
 pruneMemberLogs();
+loadUnlockStats();  // 加载累计解锁人数
 function scheduleDailyPrune() {
   const now = new Date();
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
@@ -714,6 +757,7 @@ app.post('/api/member-login', (req, res) => {
   delete fails[ip];
   saveLoginFails(fails);
   res.cookie(MEMBER_COOKIE, MEMBER_AUTH_HASH, { httpOnly: true, maxAge: MEMBER_COOKIE_MAXAGE, sameSite: 'lax', secure: true });
+  notifyMemberUnlock();  // 提醒焦羽：有人解锁了会员内容
   res.json({ ok: true });
 });
 
