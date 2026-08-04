@@ -268,6 +268,30 @@ function addPost(post) {
   return post;
 }
 
+// 删除帖子时连带删除对应媒体文件（media 数组 + 旧格式 image/video）
+function deletePostMediaFiles(post) {
+  if (!post) return;
+  const urls = [];
+  if (Array.isArray(post.media)) {
+    for (const m of post.media) if (m && typeof m.url === 'string') urls.push(m.url);
+  }
+  if (typeof post.image === 'string' && post.image) urls.push(post.image);
+  if (typeof post.video === 'string' && post.video) urls.push(post.video);
+  for (const url of urls) {
+    try {
+      const fname = path.basename(url);   // 只取文件名，防路径穿越
+      if (!fname || fname === '.' || fname === '..') continue;
+      const full = path.join(POSTS_MEDIA_DIR, fname);
+      if (full.startsWith(POSTS_MEDIA_DIR) && fs.existsSync(full)) {
+        fs.unlinkSync(full);
+        console.log('[posts] 连带删除媒体文件:', fname);
+      }
+    } catch (e) {
+      console.error('[posts] 删除媒体文件失败:', e.message);
+    }
+  }
+}
+
 // 帖子图片上传（存 posts_media，不随每日清理删除）
 const postStorage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -576,8 +600,10 @@ app.delete('/api/posts/:id', (req, res) => {
   const posts = loadPosts();
   const idx = posts.findIndex(p => p.id === id);
   if (idx === -1) return res.status(404).json({ error: '帖子不存在' });
+  const removed = posts[idx];
   posts.splice(idx, 1);
   savePosts(posts);
+  deletePostMediaFiles(removed);   // 连带删除图片/视频文件
   res.json({ ok: true });
 });
 
@@ -1243,8 +1269,10 @@ function handleTGMessage(msg) {
       const posts = loadPosts();
       const idx = posts.findIndex(p => String(p.tgMsgId) === String(targetTgId));
       if (idx !== -1) {
+        const removed = posts[idx];
         posts.splice(idx, 1);
         savePosts(posts);
+        deletePostMediaFiles(removed);   // 连带删除图片/视频文件
         tgAPI('sendMessage', {
           chat_id: msg.chat.id,
           message_thread_id: msg.message_thread_id,
