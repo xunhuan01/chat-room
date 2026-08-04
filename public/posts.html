@@ -12,12 +12,13 @@
   .top-bar .title { font-size: 16px; font-weight: 600; }
   .top-bar .post-btn { background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; }
   .posts { max-width: 560px; margin: 0 auto; padding: 12px; }
-  .post { background: #fff; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
-  .post .meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .post { background: #fff; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); height: 358px; display: flex; flex-direction: column; overflow: hidden; }
+  .post .meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-shrink: 0; }
   .post .avatar { width: 32px; height: 32px; border-radius: 50%; background: #e8f4ff; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
   .post .author { font-size: 13px; font-weight: 600; color: #333; }
   .post .time { font-size: 11px; color: #aaa; }
-  .post .text { font-size: 14px; line-height: 1.7; color: #333; word-break: break-word; }
+  .post .text { font-size: 14px; line-height: 1.7; color: #333; word-break: break-word; flex-shrink: 0; }
+  .post.has-media .text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .post img { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; cursor: zoom-in; }
   .post video { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; background: #000; }
   .empty { text-align: center; color: #aaa; font-size: 14px; padding: 60px 0; }
@@ -56,10 +57,25 @@
   .modal .cancel { background: #f0f0f0; color: #555; }
   .modal .submit { background: #2563eb; color: #fff; }
   .modal .err { color: #ef4444; font-size: 12px; margin-bottom: 10px; display: none; }
-  /* 帖子媒体网格（最多4格） */
-  .post .media-grid { display: grid; gap: 4px; margin-top: 8px; }
-  .post .media-grid img, .post .media-grid video { width: 100%; border-radius: 8px; display: block; }
+  /* 帖子媒体网格（最多4格，固定高度） */
+  .post .media-grid { display: grid; gap: 4px; margin-top: auto; height: 222px; flex-shrink: 0; }
+  .post .media-grid.grid-1 { grid-template-columns: 1fr; height: 222px; }
+  .post .media-grid img, .post .media-grid video { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; display: block; }
   .post .media-grid video { background: #000; }
+  /* 单图/单视频完整显示不变形（不被裁剪） */
+  .post .media-grid.contain img, .post .media-grid.contain video { object-fit: contain; background: #000; }
+  /* 点击查看按钮 */
+  .post .view-more { margin-top: 6px; text-align: center; background: none; border: none; color: #2563eb; font-size: 13px; cursor: pointer; padding: 4px 0; flex-shrink: 0; }
+  /* 查看弹层 */
+  .viewer { position: fixed; inset: 0; background: rgba(0,0,0,0.92); display: none; flex-direction: column; z-index: 300; }
+  .viewer.show { display: flex; }
+  .viewer .viewer-top { padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; color: #fff; flex-shrink: 0; }
+  .viewer .viewer-title { font-size: 14px; font-weight: 600; }
+  .viewer .viewer-close { background: none; border: none; color: #fff; font-size: 22px; cursor: pointer; padding: 4px 8px; }
+  .viewer .viewer-body { flex: 1; overflow-y: auto; padding: 8px 16px 24px; }
+  .viewer .viewer-text { color: #eee; font-size: 15px; line-height: 1.8; white-space: pre-wrap; word-break: break-word; margin-bottom: 16px; }
+  .viewer .viewer-media img { width: 100%; border-radius: 8px; display: block; margin-bottom: 12px; }
+  .viewer .viewer-media video { width: 100%; border-radius: 8px; display: block; margin-bottom: 12px; background: #000; max-height: 70vh; }
 </style>
 </head>
 <body>
@@ -106,6 +122,18 @@
     </div>
   </div>
 
+  <!-- 帖子查看弹层 -->
+  <div class="viewer" id="viewer">
+    <div class="viewer-top">
+      <span class="viewer-title" id="viewerTitle"></span>
+      <button class="viewer-close" id="viewerClose">✕</button>
+    </div>
+    <div class="viewer-body">
+      <div class="viewer-text" id="viewerText"></div>
+      <div class="viewer-media" id="viewerMedia"></div>
+    </div>
+  </div>
+
 <script>
   const list = document.getElementById("postList");
   const overlay = document.getElementById("overlay");
@@ -120,6 +148,7 @@
   const postBtn = document.getElementById("postBtn");
   const mediaList = document.getElementById("mediaList");
   let pendingFiles = [];  // 待上传文件队列（最多4个，可图视频混合）
+  let currentPosts = [];  // 当前帖子列表（供查看弹层用）
 
   const emojiMap = { admin: "👤", tg: "✈️" };
 
@@ -156,8 +185,10 @@
       isAdmin = !!d.admin;
     } catch (e) {}
 
-    list.innerHTML = posts.map(p => `
-      <div class="post">
+    list.innerHTML = posts.map(p => {
+      const hasMedia = getMedia(p).length > 0;
+      return `
+      <div class="post ${hasMedia ? 'has-media' : ''}" data-id="${esc(p.id)}">
         <div class="meta">
           <span class="avatar">${emojiMap[p.author] || "👤"}</span>
           <div>
@@ -168,11 +199,14 @@
         </div>
         ${p.text ? `<div class="text">${esc(p.text)}</div>` : ""}
         ${renderMedia(p)}
+        ${hasMedia ? `<button class="view-more" data-id="${esc(p.id)}">点击查看</button>` : ""}
       </div>
-    `).join("");
+    `;
+    }).join("");
     // 删除按钮事件
     list.querySelectorAll(".post-del").forEach(btn => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
         const id = btn.dataset.id;
         if (!confirm("确定删除这条帖子吗？")) return;
         try {
@@ -187,27 +221,68 @@
         }
       });
     });
+    // 点击查看 → 弹层
+    list.querySelectorAll(".view-more").forEach(btn => {
+      btn.addEventListener("click", () => openViewer(btn.dataset.id));
+    });
+    // 纯文字帖：文字超过帖子高度上限才显示"点击查看"（JS 检测）
+    list.querySelectorAll(".post:not(.has-media) .text").forEach(el => {
+      const post = el.closest(".post");
+      // 文字区可用高度 = 帖子高度 - meta - padding
+      const textMax = 358 - 32 - 14 - 8 - 40 - 14 - 12;
+      if (el.scrollHeight > textMax) {
+        const btn = document.createElement("button");
+        btn.className = "view-more";
+        btn.textContent = "点击查看";
+        btn.dataset.id = post.dataset.id;
+        post.appendChild(btn);
+        btn.addEventListener("click", () => openViewer(btn.dataset.id));
+      }
+    });
   }
 
-  // 渲染帖子媒体（最多4格：media 数组优先，兼容旧版单 image/video 字段）
-  // 帖子整段文字显示在媒体网格上方（renderPosts 里 p.text 渲染）
+  // 提取帖子媒体数组
+  function getMedia(p) {
+    if (Array.isArray(p.media) && p.media.length) return p.media;
+    if (p.image) return [{ type: "image", url: p.image }];
+    if (p.video) return [{ type: "video", url: p.video }];
+    return [];
+  }
+
+  // 渲染帖子媒体（最多4格固定高度；单媒体完整显示不变形）
   function renderMedia(p) {
-    let media = [];
-    if (Array.isArray(p.media) && p.media.length) {
-      media = p.media;
-    } else if (p.image) {
-      media = [{ type: "image", url: p.image }];
-    } else if (p.video) {
-      media = [{ type: "video", url: p.video }];
-    }
+    const media = getMedia(p);
     if (!media.length) return "";
-    const cols = media.length === 1 ? "1fr" : "repeat(2, 1fr)";
+    const cols = media.length === 1 ? "grid-1 contain" : "repeat(2, 1fr)";
     const items = media.map(m => m.type === "video"
       ? `<video src="${esc(m.url)}" controls playsinline preload="metadata"></video>`
       : `<img src="${esc(m.url)}" onclick="window.open(this.src)" alt="">`
     ).join("");
-    return `<div class="media-grid" style="grid-template-columns:${cols}">${items}</div>`;
+    return `<div class="media-grid ${cols === 'grid-1 contain' ? 'grid-1 contain' : ''}" style="${cols === 'grid-1 contain' ? '' : `grid-template-columns:${cols}`}">${items}</div>`;
   }
+
+  // 打开帖子查看弹层（完整内容）
+  function openViewer(id) {
+    const p = currentPosts.find(x => x.id === id);
+    if (!p) return;
+    const media = getMedia(p);
+    document.getElementById("viewerTitle").textContent = (p.author === "admin" ? "焦羽" : p.author) + " · " + fmtTime(p.time);
+    document.getElementById("viewerText").textContent = p.text || "";
+    document.getElementById("viewerText").style.display = p.text ? "block" : "none";
+    const mediaHtml = media.map(m => m.type === "video"
+      ? `<video src="${esc(m.url)}" controls playsinline></video>`
+      : `<img src="${esc(m.url)}" onclick="window.open(this.src)" alt="">`
+    ).join("");
+    document.getElementById("viewerMedia").innerHTML = mediaHtml;
+    document.getElementById("viewer").classList.add("show");
+    document.body.style.overflow = "hidden";
+  }
+  function closeViewer() {
+    document.getElementById("viewer").classList.remove("show");
+    document.body.style.overflow = "";
+  }
+  document.getElementById("viewerClose").onclick = closeViewer;
+  document.getElementById("viewer").onclick = (e) => { if (e.target.id === "viewer") closeViewer(); };
 
   async function loadPosts() {
     try {
@@ -221,6 +296,7 @@
       // 已登录：确保密码门隐藏
       gate.style.display = "none";
       const posts = await resp.json();
+      currentPosts = posts;
       renderPosts(posts);
     } catch (e) {
       list.innerHTML = '<div class="empty">加载失败，请刷新重试</div>';
