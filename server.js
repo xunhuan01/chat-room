@@ -718,6 +718,8 @@ app.post('/api/member-login', (req, res) => {
 });
 
 app.get('/posts', (req, res) => {
+  // 页面 HTML 禁止缓存：前端改版频繁，避免浏览器/CDN 缓存旧版
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   // 管理员可带 ?pw= 直接种 admin cookie（发帖入口）
   if (req.query.pw === ADMIN_PASSWORD) {
     res.cookie(ADMIN_COOKIE, ADMIN_PASSWORD, { httpOnly: true, maxAge: MEMBER_COOKIE_MAXAGE, sameSite: 'lax', secure: true });
