@@ -190,7 +190,10 @@
     } catch (e) {}
 
     list.innerHTML = posts.map(p => {
-      const hasMedia = getMedia(p).length > 0;
+      const media = getMedia(p);
+      const hasMedia = media.length > 0;
+      // 单媒体（1图或1视频）已等比例完整显示，无需"点击查看"；多图网格裁剪缩略才需要
+      const needsViewMore = media.length > 1;
       return `
       <div class="post ${hasMedia ? 'has-media' : ''}" data-id="${esc(p.id)}">
         <div class="meta">
@@ -203,7 +206,7 @@
         </div>
         ${p.text ? `<div class="text">${esc(p.text)}</div>` : ""}
         ${renderMedia(p)}
-        ${hasMedia ? `<button class="view-more" data-id="${esc(p.id)}">点击查看</button>` : ""}
+        ${needsViewMore ? `<button class="view-more" data-id="${esc(p.id)}">点击查看</button>` : ""}
       </div>
     `;
     }).join("");
@@ -232,6 +235,20 @@
     // 卡片内视频：点击 → 全屏查看层播放（卡片内不内嵌播放，避免画面被裁）
     list.querySelectorAll(".video-wrap").forEach(w => {
       w.addEventListener("click", () => openViewer(w.dataset.id));
+    });
+    // 单媒体帖子：文字真被截断（超3行）时补"点击查看"按钮（媒体本身完整显示无需按钮）
+    list.querySelectorAll(".post.has-media .text").forEach(el => {
+      if (el.scrollHeight > el.clientHeight) {
+        const post = el.closest(".post");
+        if (!post.querySelector(".view-more")) {
+          const btn = document.createElement("button");
+          btn.className = "view-more";
+          btn.textContent = "点击查看";
+          btn.dataset.id = post.dataset.id;
+          post.appendChild(btn);
+          btn.addEventListener("click", () => openViewer(btn.dataset.id));
+        }
+      }
     });
     // 纯文字帖：文字超过帖子高度上限才显示"点击查看"（JS 检测）
     list.querySelectorAll(".post:not(.has-media) .text").forEach(el => {
