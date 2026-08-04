@@ -190,6 +190,7 @@
   }
 
   // 渲染帖子媒体（最多4格：media 数组优先，兼容旧版单 image/video 字段）
+  // 帖子整段文字显示在媒体网格上方（renderPosts 里 p.text 渲染）
   function renderMedia(p) {
     let media = [];
     if (Array.isArray(p.media) && p.media.length) {

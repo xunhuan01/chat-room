@@ -1093,7 +1093,7 @@ function queueTGMediaGroup(msg, text, authorName, downloadPromise) {
     };
     tgMediaGroups.set(gid, group);
   }
-  if (!group.text && text) group.text = text;   // 相册配文只挂在第一张图上
+  if (!group.text && text) group.text = text;   // 相册配文（TG 里写一次，挂在第一张图）→ 整帖文字
   group.items.push(downloadPromise);
   // 滑动窗口：每来一条新消息重置计时器
   clearTimeout(group.timer);
