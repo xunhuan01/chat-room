@@ -17,8 +17,7 @@
   .post .avatar { width: 32px; height: 32px; border-radius: 50%; background: #e8f4ff; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
   .post .author { font-size: 13px; font-weight: 600; color: #333; }
   .post .time { font-size: 11px; color: #aaa; }
-  .post .text { font-size: 14px; line-height: 1.7; color: #333; word-break: break-word; flex-shrink: 0; }
-  .post.has-media .text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .post .text { font-size: 14px; line-height: 1.7; color: #333; word-break: break-word; flex: 1 1 auto; overflow: hidden; min-height: 0; }
   .post img { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; cursor: zoom-in; }
   .post video { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; background: #000; }
   .empty { text-align: center; color: #aaa; font-size: 14px; padding: 60px 0; }
@@ -60,8 +59,9 @@
   /* 帖子媒体网格（最多4格，固定高度） */
   .post .media-grid { display: grid; gap: 4px; margin-top: auto; height: 222px; flex-shrink: 0; }
   .post .media-grid.grid-1 { grid-template-columns: 1fr; height: 222px; }
-  .post .media-grid img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; display: block; }
-  .post .media-grid video { width: 100%; height: 100%; object-fit: contain; background: #000; border-radius: 8px; display: block; cursor: pointer; }
+  .post .media-grid img, .post .media-grid video { width: 100%; height: 100%; object-fit: contain; background: #000; border-radius: 8px; display: block; }
+  .post .media-grid img { cursor: zoom-in; }
+  .post .media-grid video { cursor: pointer; }
   .post .video-wrap { position: relative; height: 100%; cursor: pointer; }
   .post .video-wrap video { width: 100%; height: 100%; }
   .post .video-wrap .play-badge { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; pointer-events: none; }
@@ -190,10 +190,7 @@
     } catch (e) {}
 
     list.innerHTML = posts.map(p => {
-      const media = getMedia(p);
-      const hasMedia = media.length > 0;
-      // 单媒体（1图或1视频）已等比例完整显示，无需"点击查看"；多图网格裁剪缩略才需要
-      const needsViewMore = media.length > 1;
+      const hasMedia = getMedia(p).length > 0;
       return `
       <div class="post ${hasMedia ? 'has-media' : ''}" data-id="${esc(p.id)}">
         <div class="meta">
@@ -206,7 +203,6 @@
         </div>
         ${p.text ? `<div class="text">${esc(p.text)}</div>` : ""}
         ${renderMedia(p)}
-        ${needsViewMore ? `<button class="view-more" data-id="${esc(p.id)}">点击查看</button>` : ""}
       </div>
     `;
     }).join("");
@@ -232,33 +228,25 @@
     list.querySelectorAll(".view-more").forEach(btn => {
       btn.addEventListener("click", () => openViewer(btn.dataset.id));
     });
-    // 卡片内视频：点击 → 全屏查看层播放（卡片内不内嵌播放，避免画面被裁）
+    // 卡片内视频/图片：点击 → 全屏查看层（视频自动播放，图片看原图）
     list.querySelectorAll(".video-wrap").forEach(w => {
       w.addEventListener("click", () => openViewer(w.dataset.id));
     });
-    // 单媒体帖子：文字真被截断（超3行）时补"点击查看"按钮（媒体本身完整显示无需按钮）
-    list.querySelectorAll(".post.has-media .text").forEach(el => {
-      if (el.scrollHeight > el.clientHeight) {
-        const post = el.closest(".post");
-        if (!post.querySelector(".view-more")) {
-          const btn = document.createElement("button");
-          btn.className = "view-more";
-          btn.textContent = "点击查看";
-          btn.dataset.id = post.dataset.id;
-          post.appendChild(btn);
-          btn.addEventListener("click", () => openViewer(btn.dataset.id));
-        }
-      }
+    list.querySelectorAll(".media-img").forEach(img => {
+      img.addEventListener("click", () => openViewer(img.dataset.id));
     });
-    // 纯文字帖：文字超过帖子高度上限才显示"点击查看"（JS 检测）
-    list.querySelectorAll(".post:not(.has-media) .text").forEach(el => {
+    // 统一逻辑：文字自然生长，只有真的溢出帖子（被 overflow 截断）才显示"查看全文"
+    list.querySelectorAll(".post .text").forEach(el => {
+      // 有媒体帖：文字区域 flex 占剩余空间；纯文字帖：占满整个帖子
+      // 溢出判断：scrollHeight > clientHeight（被 overflow:hidden 截断了）
       const post = el.closest(".post");
-      // 文字区可用高度 = 帖子高度 - meta - padding
-      const textMax = 358 - 32 - 14 - 8 - 40 - 14 - 12;
-      if (el.scrollHeight > textMax) {
+      const isPureText = !post.classList.contains("has-media");
+      const textMax = isPureText ? (358 - 32 - 14 - 8 - 40 - 14 - 12) : 0;
+      const overflowed = isPureText ? (el.scrollHeight > textMax) : (el.scrollHeight > el.clientHeight + 2);
+      if (overflowed) {
         const btn = document.createElement("button");
         btn.className = "view-more";
-        btn.textContent = "点击查看";
+        btn.textContent = "查看全文";
         btn.dataset.id = post.dataset.id;
         post.appendChild(btn);
         btn.addEventListener("click", () => openViewer(btn.dataset.id));
@@ -281,7 +269,7 @@
     const cols = media.length === 1 ? "grid-1 contain" : "repeat(2, 1fr)";
     const items = media.map(m => m.type === "video"
       ? `<div class="video-wrap" data-id="${esc(p.id)}"><video src="${esc(m.url)}" playsinline preload="metadata" muted></video><span class="play-badge"></span></div>`
-      : `<img src="${esc(m.url)}" onclick="window.open(this.src)" alt="">`
+      : `<img src="${esc(m.url)}" class="media-img" data-id="${esc(p.id)}" alt="">`
     ).join("");
     return `<div class="media-grid ${cols === 'grid-1 contain' ? 'grid-1 contain' : ''}" style="${cols === 'grid-1 contain' ? '' : `grid-template-columns:${cols}`}">${items}</div>`;
   }
