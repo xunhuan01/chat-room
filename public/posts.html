@@ -60,10 +60,14 @@
   /* 帖子媒体网格（最多4格，固定高度） */
   .post .media-grid { display: grid; gap: 4px; margin-top: auto; height: 222px; flex-shrink: 0; }
   .post .media-grid.grid-1 { grid-template-columns: 1fr; height: 222px; }
-  .post .media-grid img, .post .media-grid video { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; display: block; }
-  .post .media-grid video { background: #000; }
+  .post .media-grid img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; display: block; }
+  .post .media-grid video { width: 100%; height: 100%; object-fit: contain; background: #000; border-radius: 8px; display: block; cursor: pointer; }
+  .post .video-wrap { position: relative; height: 100%; cursor: pointer; }
+  .post .video-wrap video { width: 100%; height: 100%; }
+  .post .video-wrap .play-badge { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  .post .video-wrap .play-badge::before { content: ""; width: 0; height: 0; border-left: 12px solid #fff; border-top: 8px solid transparent; border-bottom: 8px solid transparent; margin-left: 3px; }
   /* 单图/单视频完整显示不变形（不被裁剪） */
-  .post .media-grid.contain img, .post .media-grid.contain video { object-fit: contain; background: #000; }
+  .post .media-grid.contain img { object-fit: contain; background: #000; }
   /* 点击查看按钮 */
   .post .view-more { margin-top: 6px; text-align: center; background: none; border: none; color: #2563eb; font-size: 13px; cursor: pointer; padding: 4px 0; flex-shrink: 0; }
   /* 查看弹层 */
@@ -75,7 +79,7 @@
   .viewer .viewer-body { flex: 1; overflow-y: auto; padding: 8px 16px 24px; }
   .viewer .viewer-text { color: #eee; font-size: 15px; line-height: 1.8; white-space: pre-wrap; word-break: break-word; margin-bottom: 16px; }
   .viewer .viewer-media img { width: 100%; border-radius: 8px; display: block; margin-bottom: 12px; }
-  .viewer .viewer-media video { width: 100%; border-radius: 8px; display: block; margin-bottom: 12px; background: #000; max-height: 70vh; }
+  .viewer .viewer-media video { width: 100%; border-radius: 8px; display: block; margin-bottom: 12px; background: #000; max-height: 75vh; object-fit: contain; }
 </style>
 </head>
 <body>
@@ -225,6 +229,10 @@
     list.querySelectorAll(".view-more").forEach(btn => {
       btn.addEventListener("click", () => openViewer(btn.dataset.id));
     });
+    // 卡片内视频：点击 → 全屏查看层播放（卡片内不内嵌播放，避免画面被裁）
+    list.querySelectorAll(".video-wrap").forEach(w => {
+      w.addEventListener("click", () => openViewer(w.dataset.id));
+    });
     // 纯文字帖：文字超过帖子高度上限才显示"点击查看"（JS 检测）
     list.querySelectorAll(".post:not(.has-media) .text").forEach(el => {
       const post = el.closest(".post");
@@ -255,7 +263,7 @@
     if (!media.length) return "";
     const cols = media.length === 1 ? "grid-1 contain" : "repeat(2, 1fr)";
     const items = media.map(m => m.type === "video"
-      ? `<video src="${esc(m.url)}" controls playsinline preload="metadata"></video>`
+      ? `<div class="video-wrap" data-id="${esc(p.id)}"><video src="${esc(m.url)}" playsinline preload="metadata" muted></video><span class="play-badge"></span></div>`
       : `<img src="${esc(m.url)}" onclick="window.open(this.src)" alt="">`
     ).join("");
     return `<div class="media-grid ${cols === 'grid-1 contain' ? 'grid-1 contain' : ''}" style="${cols === 'grid-1 contain' ? '' : `grid-template-columns:${cols}`}">${items}</div>`;
@@ -270,7 +278,7 @@
     document.getElementById("viewerText").textContent = p.text || "";
     document.getElementById("viewerText").style.display = p.text ? "block" : "none";
     const mediaHtml = media.map(m => m.type === "video"
-      ? `<video src="${esc(m.url)}" controls playsinline></video>`
+      ? `<video src="${esc(m.url)}" controls autoplay muted playsinline></video>`
       : `<img src="${esc(m.url)}" onclick="window.open(this.src)" alt="">`
     ).join("");
     document.getElementById("viewerMedia").innerHTML = mediaHtml;
