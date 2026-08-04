@@ -477,6 +477,23 @@ async function compressVideoWithFFmpeg(filePath) {
 // ─── Download Telegram file ───────────────────────────────
 async function downloadTGFile(fileId, targetDir) {
   const dir = targetDir || UPLOADS_DIR;
+  // 本地测试后门：TEST_LOCAL_MEDIA=<目录> 时，fileId 视为目录内的本地文件名直接复制（生产不设此变量）
+  if (process.env.TEST_LOCAL_MEDIA) {
+    const localSrc = path.join(process.env.TEST_LOCAL_MEDIA, fileId);
+    if (fs.existsSync(localSrc)) {
+      const ext = path.extname(localSrc) || '.jpg';
+      const filename = Date.now() + '-' + Math.random().toString(36).slice(2, 8) + ext;
+      const savePath = path.join(dir, filename);
+      try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+      fs.copyFileSync(localSrc, savePath);
+      if (isVideoFile(savePath)) {
+        await compressVideoWithFFmpeg(savePath);
+      } else {
+        await compressImageWithSharp(savePath);
+      }
+      return (dir === POSTS_MEDIA_DIR ? '/posts-media/' : '/uploads/') + filename;
+    }
+  }
   const info = await tgAPI('getFile', { file_id: fileId });
   if (!info.ok || !info.result) {
     console.error('downloadTGFile: getFile failed', info);
@@ -712,13 +729,23 @@ app.post('/api/posts', (req, res) => {
   if (req.query.pw !== ADMIN_PASSWORD) {
     return res.status(403).json({ error: '密码错误' });
   }
-  const { text, image, video } = req.body || {};
-  if (!text && !image && !video) return res.status(400).json({ error: '内容为空' });
+  const { text, image, video, media } = req.body || {};
+  let mediaArr = [];
+  if (Array.isArray(media)) {
+    mediaArr = media;
+  } else {
+    if (image) mediaArr.push({ type: 'image', url: image });
+    if (video) mediaArr.push({ type: 'video', url: video });
+  }
+  // 校验：url 必须指向本站 /posts-media/，type 必须合法，最多 4 个
+  mediaArr = mediaArr.filter(m => m && typeof m.url === 'string' &&
+    m.url.startsWith('/posts-media/') && (m.type === 'image' || m.type === 'video'));
+  if (mediaArr.length > 4) return res.status(400).json({ error: '最多4张图或视频' });
+  if (!text && !mediaArr.length) return res.status(400).json({ error: '内容为空' });
   const post = addPost({
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
     text: (text || '').trim(),
-    image: image || '',
-    video: video || '',
+    media: mediaArr,
     author: 'admin',
     time: new Date().toISOString()
   });
@@ -1050,6 +1077,51 @@ async function pollTelegram() {
   setTimeout(pollTelegram, 1000);
 }
 
+// ─── TG 相册聚合（media_group 多条消息 → 合并一条帖子，最多4个单位）───
+const tgMediaGroups = new Map();          // media_group_id -> { timer, items, text, author, tgMsgId, chat, threadId }
+const MEDIA_GROUP_WINDOW_MS = 5000;       // 最后一条消息到达后等 5 秒收齐再发帖
+
+function queueTGMediaGroup(msg, text, authorName, downloadPromise) {
+  const gid = msg.media_group_id;
+  let group = tgMediaGroups.get(gid);
+  if (!group) {
+    group = {
+      timer: null, items: [],
+      text: '', author: authorName,
+      tgMsgId: msg.message_id || null,
+      chat: msg.chat, threadId: msg.message_thread_id || null
+    };
+    tgMediaGroups.set(gid, group);
+  }
+  if (!group.text && text) group.text = text;   // 相册配文只挂在第一张图上
+  group.items.push(downloadPromise);
+  // 滑动窗口：每来一条新消息重置计时器
+  clearTimeout(group.timer);
+  group.timer = setTimeout(() => {
+    tgMediaGroups.delete(gid);
+    finalizeTGMediaGroup(group);
+  }, MEDIA_GROUP_WINDOW_MS);
+}
+
+async function finalizeTGMediaGroup(group) {
+  let results = [];
+  try { results = await Promise.all(group.items); } catch (e) {}
+  const media = results.filter(Boolean).slice(0, 4);   // 下载失败项剔除，最多 4 个
+  if (!media.length) return;
+  addPost({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    text: (group.text || '').trim(),
+    media,
+    author: group.author,
+    tgMsgId: group.tgMsgId,
+    time: new Date().toISOString()
+  });
+  const reply = { chat_id: group.chat.id, text: '✅ 已发布到资源墙' };
+  if (group.threadId) reply.message_thread_id = group.threadId;
+  tgAPI('sendMessage', reply).catch(() => {});
+  console.log('[posts] TG 相册聚合发帖:', group.author, media.length, '个单位');
+}
+
 // ─── TG 私聊 → 帖子墙发帖 ────────────────────────────────
 function handleTGPostToWall(msg) {
   const text = msg.text || msg.caption || '';
@@ -1061,12 +1133,24 @@ function handleTGPostToWall(msg) {
   const TG_ADMIN = 'fuck001';
   const authorName = (msg.from && msg.from.username === TG_ADMIN) ? '焦羽' : author;
 
-  const doAdd = (image, video) => {
+  // ── 相册消息 → 入队聚合（等收齐合并成一帖）──
+  if (msg.media_group_id && (hasPhoto || hasVideo)) {
+    const download = hasPhoto
+      ? downloadTGFile(msg.photo[msg.photo.length - 1].file_id, POSTS_MEDIA_DIR)
+          .then(url => url ? { type: 'image', url } : null)
+          .catch(() => null)
+      : downloadTGFile(msg.video.file_id, POSTS_MEDIA_DIR)
+          .then(url => url ? { type: 'video', url } : null)
+          .catch(() => null);
+    queueTGMediaGroup(msg, text, authorName, download);
+    return;
+  }
+
+  const doAdd = (mediaArr) => {
     addPost({
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
       text: text.trim(),
-      image: image || '',
-      video: video || '',
+      media: mediaArr || [],
       author: authorName,
       tgMsgId: msg.message_id || null,
       time: new Date().toISOString()
@@ -1083,19 +1167,19 @@ function handleTGPostToWall(msg) {
   if (hasPhoto) {
     const photo = msg.photo[msg.photo.length - 1];
     downloadTGFile(photo.file_id, POSTS_MEDIA_DIR).then(imgUrl => {
-      if (imgUrl) doAdd(imgUrl);
+      if (imgUrl) doAdd([{ type: 'image', url: imgUrl }]);
       else console.error('[posts] TG 图片下载失败');
     });
     return;
   }
   if (hasVideo) {
     downloadTGFile(msg.video.file_id, POSTS_MEDIA_DIR).then(videoUrl => {
-      if (videoUrl) doAdd('', videoUrl);
+      if (videoUrl) doAdd([{ type: 'video', url: videoUrl }]);
       else console.error('[posts] TG 视频下载失败');
     });
     return;
   }
-  doAdd('', '');
+  doAdd([]);
 }
 
 // ─── TG 会员话题 → 广播给网页端会员 ──────────────────────
@@ -1281,3 +1365,6 @@ server.listen(PORT, '0.0.0.0', () => {
   scheduleDailyCleanup();
   console.log('Daily upload cleanup scheduled');
 });
+
+// 测试钩子：供本地测试脚本模拟 TG 消息（生产运行不受影响）
+module.exports = { handleTGPostToWall };

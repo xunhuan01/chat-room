@@ -46,14 +46,20 @@
   .modal textarea { min-height: 90px; resize: vertical; }
   .modal .img-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
   .modal .img-btn { background: #f0f0f0; border: none; border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; color: #555; }
-  .modal .img-preview { max-width: 90px; max-height: 90px; border-radius: 8px; display: none; }
-  .modal .video-preview { max-width: 160px; max-height: 120px; }
+  .modal .media-list { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+  .modal .media-item { position: relative; }
+  .modal .media-item img, .modal .media-item video { width: 100%; height: 68px; object-fit: cover; border-radius: 8px; background: #f5f5f5; display: block; }
+  .modal .media-item .rm { position: absolute; top: -7px; right: -7px; background: #ef4444; color: #fff; border: none; border-radius: 50%; width: 20px; height: 20px; font-size: 12px; line-height: 20px; cursor: pointer; padding: 0; }
   .modal .up-status { font-size: 12px; color: #2563eb; display: none; }
   .modal .actions { display: flex; gap: 10px; justify-content: flex-end; }
   .modal .actions button { border: none; border-radius: 8px; padding: 9px 20px; font-size: 14px; cursor: pointer; }
   .modal .cancel { background: #f0f0f0; color: #555; }
   .modal .submit { background: #2563eb; color: #fff; }
   .modal .err { color: #ef4444; font-size: 12px; margin-bottom: 10px; display: none; }
+  /* 帖子媒体网格（最多4格） */
+  .post .media-grid { display: grid; gap: 4px; margin-top: 8px; }
+  .post .media-grid img, .post .media-grid video { width: 100%; border-radius: 8px; display: block; }
+  .post .media-grid video { background: #000; }
 </style>
 </head>
 <body>
@@ -89,11 +95,10 @@
       <textarea id="textInput" placeholder="写点什么..."></textarea>
       <div class="img-row">
         <button class="img-btn" id="imgBtn">📷 图片/视频</button>
-        <input type="file" id="fileInput" accept="image/*,video/*" style="display:none">
-        <img class="img-preview" id="imgPreview" alt="">
-        <video class="img-preview video-preview" id="videoPreview" controls muted playsinline></video>
+        <input type="file" id="fileInput" accept="image/*,video/*" multiple style="display:none">
         <span class="up-status" id="upStatus"></span>
       </div>
+      <div class="media-list" id="mediaList"></div>
       <div class="actions">
         <button class="cancel" id="cancelBtn">取消</button>
         <button class="submit" id="submitBtn">发布</button>
@@ -108,15 +113,13 @@
   const pwInput = document.getElementById("pwInput");
   const textInput = document.getElementById("textInput");
   const fileInput = document.getElementById("fileInput");
-  const imgPreview = document.getElementById("imgPreview");
-  const videoPreview = document.getElementById("videoPreview");
   const upStatus = document.getElementById("upStatus");
   const gate = document.getElementById("gate");
   const gatePw = document.getElementById("gatePw");
   const gateErr = document.getElementById("gateErr");
   const postBtn = document.getElementById("postBtn");
-  let uploadedUrl = "";
-  let uploadedType = "";  // 'image' | 'video'
+  const mediaList = document.getElementById("mediaList");
+  let pendingFiles = [];  // 待上传文件队列（最多4个，可图视频混合）
 
   const emojiMap = { admin: "👤", tg: "✈️" };
 
@@ -164,8 +167,7 @@
           ${isAdmin ? `<button class="post-del" data-id="${esc(p.id)}">删除</button>` : ""}
         </div>
         ${p.text ? `<div class="text">${esc(p.text)}</div>` : ""}
-        ${p.image ? `<img src="${esc(p.image)}" onclick="window.open(this.src)" alt="">` : ""}
-        ${p.video ? `<video src="${esc(p.video)}" controls playsinline preload="metadata"></video>` : ""}
+        ${renderMedia(p)}
       </div>
     `).join("");
     // 删除按钮事件
@@ -185,6 +187,25 @@
         }
       });
     });
+  }
+
+  // 渲染帖子媒体（最多4格：media 数组优先，兼容旧版单 image/video 字段）
+  function renderMedia(p) {
+    let media = [];
+    if (Array.isArray(p.media) && p.media.length) {
+      media = p.media;
+    } else if (p.image) {
+      media = [{ type: "image", url: p.image }];
+    } else if (p.video) {
+      media = [{ type: "video", url: p.video }];
+    }
+    if (!media.length) return "";
+    const cols = media.length === 1 ? "1fr" : "repeat(2, 1fr)";
+    const items = media.map(m => m.type === "video"
+      ? `<video src="${esc(m.url)}" controls playsinline preload="metadata"></video>`
+      : `<img src="${esc(m.url)}" onclick="window.open(this.src)" alt="">`
+    ).join("");
+    return `<div class="media-grid" style="grid-template-columns:${cols}">${items}</div>`;
   }
 
   async function loadPosts() {
@@ -245,10 +266,8 @@
   // 发帖弹窗
   document.getElementById("postBtn").onclick = () => {
     errBox.style.display = "none";
-    pwInput.value = ""; textInput.value = ""; uploadedUrl = ""; uploadedType = "";
-    imgPreview.style.display = "none";
-    videoPreview.style.display = "none";
-    videoPreview.removeAttribute("src");
+    pwInput.value = ""; textInput.value = ""; pendingFiles = [];
+    mediaList.innerHTML = "";
     upStatus.style.display = "none";
     overlay.classList.add("show");
     pwInput.focus();
@@ -256,76 +275,91 @@
   document.getElementById("cancelBtn").onclick = () => overlay.classList.remove("show");
   overlay.onclick = (e) => { if (e.target === overlay) overlay.classList.remove("show"); };
 
-  // 图片/视频选择
+  // 预览队列渲染
+  function renderPending() {
+    mediaList.innerHTML = pendingFiles.map((f, i) => {
+      const url = URL.createObjectURL(f);
+      const inner = f.type.startsWith("video/")
+        ? `<video src="${url}" muted></video>`
+        : `<img src="${url}" alt="">`;
+      return `<div class="media-item">${inner}<button class="rm" data-i="${i}" title="移除">×</button></div>`;
+    }).join("");
+    mediaList.querySelectorAll(".rm").forEach(b => {
+      b.onclick = () => {
+        pendingFiles.splice(+b.dataset.i, 1);
+        renderPending();
+      };
+    });
+  }
+
+  // 图片/视频选择（可多选，最多4个）
   document.getElementById("imgBtn").onclick = () => fileInput.click();
-  fileInput.onchange = async () => {
-    const file = fileInput.files[0];
-    if (!file) return;
-    const isVideo = file.type.startsWith("video/");
-    if (isVideo && file.size > 100 * 1024 * 1024) {
-      errBox.textContent = "视频不能超过100MB";
-      errBox.style.display = "block";
-      fileInput.value = "";
-      return;
-    }
-    // XHR 上传带进度（视频大，必须看进度）
-    const form = new FormData();
-    form.append("image", file);
-    const xhr = new XMLHttpRequest();
-    upStatus.style.display = "inline";
-    upStatus.textContent = "上传中 0%";
-    xhr.open("POST", "/upload-post");
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        upStatus.textContent = "上传中 " + Math.round(e.loaded / e.total * 100) + "%";
-      }
-    };
-    xhr.onload = () => {
-      upStatus.style.display = "none";
-      try {
-        const data = JSON.parse(xhr.responseText);
-        if (xhr.status === 200 && data.url) {
-          uploadedUrl = data.url;
-          uploadedType = isVideo ? "video" : "image";
-          if (isVideo) {
-            imgPreview.style.display = "none";
-            videoPreview.src = data.url;
-            videoPreview.style.display = "block";
-          } else {
-            videoPreview.style.display = "none";
-            videoPreview.removeAttribute("src");
-            imgPreview.src = data.url;
-            imgPreview.style.display = "block";
-          }
-        } else {
-          errBox.textContent = data.error || "上传失败";
-          errBox.style.display = "block";
-        }
-      } catch (e) {
-        errBox.textContent = "上传失败";
+  fileInput.onchange = () => {
+    const files = Array.from(fileInput.files);
+    fileInput.value = "";
+    for (const f of files) {
+      if (pendingFiles.length >= 4) {
+        errBox.textContent = "最多4张图或视频";
         errBox.style.display = "block";
+        break;
       }
-      fileInput.value = "";
-    };
-    xhr.onerror = () => {
-      upStatus.style.display = "none";
-      errBox.textContent = "上传失败，请重试";
-      errBox.style.display = "block";
-      fileInput.value = "";
-    };
-    xhr.send(form);
+      pendingFiles.push(f);
+    }
+    renderPending();
   };
+
+  // 单个文件上传（XHR 带进度）
+  function uploadOne(file) {
+    return new Promise((resolve, reject) => {
+      const isVideo = file.type.startsWith("video/");
+      if (isVideo && file.size > 100 * 1024 * 1024) {
+        reject(new Error("视频不能超过100MB"));
+        return;
+      }
+      const form = new FormData();
+      form.append("image", file);
+      const xhr = new XMLHttpRequest();
+      upStatus.style.display = "inline";
+      upStatus.textContent = "上传中 0%";
+      xhr.open("POST", "/upload-post");
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          upStatus.textContent = "上传中 " + Math.round(e.loaded / e.total * 100) + "%";
+        }
+      };
+      xhr.onload = () => {
+        upStatus.style.display = "none";
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status === 200 && data.url) {
+            resolve({ type: isVideo ? "video" : "image", url: data.url });
+          } else {
+            reject(new Error(data.error || "上传失败"));
+          }
+        } catch (e) {
+          reject(new Error("上传失败"));
+        }
+      };
+      xhr.onerror = () => {
+        upStatus.style.display = "none";
+        reject(new Error("上传失败，请重试"));
+      };
+      xhr.send(form);
+    });
+  }
 
   // 发布
   document.getElementById("submitBtn").onclick = async () => {
     const pw = pwInput.value.trim();
     const text = textInput.value.trim();
     if (!pw) { errBox.textContent = "请输入管理密码"; errBox.style.display = "block"; return; }
-    if (!text && !uploadedUrl) { errBox.textContent = "内容不能为空"; errBox.style.display = "block"; return; }
+    if (!text && !pendingFiles.length) { errBox.textContent = "内容不能为空"; errBox.style.display = "block"; return; }
     try {
-      const body = { text };
-      if (uploadedType === "video") body.video = uploadedUrl;
-      else body.image = uploadedUrl;
+      const media = [];
+      for (const f of pendingFiles) {
+        media.push(await uploadOne(f));
+      }
+      const body = { text, media };
       const resp = await fetch("/api/posts?pw=" + encodeURIComponent(pw), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -340,7 +374,7 @@
       overlay.classList.remove("show");
       loadPosts();
     } catch (e) {
-      errBox.textContent = "发布失败";
+      errBox.textContent = e.message || "发布失败";
       errBox.style.display = "block";
     }
   };
