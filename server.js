@@ -335,6 +335,23 @@ function saveMemberLogs(logs) {
   } catch (e) { console.error('saveMemberLogs:', e.message); }
 }
 
+// 定时强制清理：超 72h 的消息直接删除（不依赖"有人发消息才清理"）
+function pruneMemberLogs() {
+  try {
+    const logs = loadMemberLogs();
+    if (!logs.length) return;
+    const cutoff = Date.now() - MEMBER_LOG_MAX_AGE;
+    const filtered = logs.filter(m => (m.time || 0) >= cutoff);
+    if (filtered.length !== logs.length) {
+      saveMemberLogs(filtered);
+      console.log('[member] 定时清理过期消息', logs.length - filtered.length, '条');
+    }
+  } catch (e) { console.error('pruneMemberLogs:', e.message); }
+}
+// 每小时检查一次（启动后先跑一次），保证 72h 内必清
+pruneMemberLogs();
+setInterval(pruneMemberLogs, 3600 * 1000);
+
 function appendMemberLog(entry) {
   const logs = loadMemberLogs();
   logs.push(entry);
@@ -979,8 +996,8 @@ memberNS.on('connection', (socket) => {
   memberNS.emit('member-joined', { id: socket.id, nick: member.nick, avatar: member.avatar, bg: member.bg });
   console.log('Member joined:', member.nick, member.avatar, socket.id);
 
-  // 回放近 72h 历史消息
-  const history = loadMemberLogs();
+  // 回放近 72h 历史消息（双保险过滤：即使文件里有超龄旧消息也不外泄）
+  const history = loadMemberLogs().filter(m => (m.time || 0) >= Date.now() - MEMBER_LOG_MAX_AGE);
   if (history.length > 0) {
     socket.emit('member-history', history);
     console.log('Member history sent:', history.length, 'msgs');
