@@ -335,7 +335,7 @@ function saveMemberLogs(logs) {
   } catch (e) { console.error('saveMemberLogs:', e.message); }
 }
 
-// 定时强制清理：超 72h 的消息直接删除（不依赖"有人发消息才清理"）
+// 定时强制清理：每天 0 点删掉 3 天前的所有内容，只保留最近 3 天
 function pruneMemberLogs() {
   try {
     const logs = loadMemberLogs();
@@ -344,13 +344,18 @@ function pruneMemberLogs() {
     const filtered = logs.filter(m => (m.time || 0) >= cutoff);
     if (filtered.length !== logs.length) {
       saveMemberLogs(filtered);
-      console.log('[member] 定时清理过期消息', logs.length - filtered.length, '条');
+      console.log('[member] 0点清理过期消息', logs.length - filtered.length, '条');
     }
   } catch (e) { console.error('pruneMemberLogs:', e.message); }
 }
-// 每小时检查一次（启动后先跑一次），保证 72h 内必清
+// 启动时先跑一次 + 每天 0 点定时清理
 pruneMemberLogs();
-setInterval(pruneMemberLogs, 3600 * 1000);
+function scheduleDailyPrune() {
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+  setTimeout(() => { pruneMemberLogs(); scheduleDailyPrune(); }, next - now);
+}
+scheduleDailyPrune();
 
 function appendMemberLog(entry) {
   const logs = loadMemberLogs();
