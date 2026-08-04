@@ -59,29 +59,30 @@ const proxyAgent = new HttpsProxyAgent(PROXY_URL);
 // ─── 会员解锁提醒（云端机器人私聊）────────────────────
 const UNLOCK_STATS_FILE = path.join(__dirname, 'data', 'unlock_stats.json');
 let unlockTotal = 0;        // 累计解锁人数（持久化）
-let lastUnlockAlert = 0;    // 上次提醒时间（防重复轰炸）
+let seenUnlockIps = {};     // 已见 IP 集合（新会员去重：只看首次解锁）
 
 function loadUnlockStats() {
   try {
     if (fs.existsSync(UNLOCK_STATS_FILE)) {
       const d = JSON.parse(fs.readFileSync(UNLOCK_STATS_FILE, 'utf8'));
       unlockTotal = d.total || 0;
+      seenUnlockIps = d.ips || {};
     }
   } catch (e) { console.error('loadUnlockStats:', e.message); }
 }
 function saveUnlockStats() {
   try {
     ensureDataDir();
-    fs.writeFileSync(UNLOCK_STATS_FILE, JSON.stringify({ total: unlockTotal }, null, 2));
+    fs.writeFileSync(UNLOCK_STATS_FILE, JSON.stringify({ total: unlockTotal, ips: seenUnlockIps }, null, 2));
   } catch (e) { console.error('saveUnlockStats:', e.message); }
 }
 
-// 会员解锁成功后提醒焦羽（云端机器人私聊）；10分钟内只提醒一次防轰炸
-function notifyMemberUnlock() {
+// 新会员（未见过 IP）第一次解锁 → 提醒焦羽并累计；老会员回访 → 静默
+function notifyMemberUnlock(ip) {
   if (!ALERT_BOT_TOKEN || !ALERT_CHAT_ID) return;
-  const now = Date.now();
-  if (now - lastUnlockAlert < 10 * 60 * 1000) return;  // 10分钟内不重复提醒
-  lastUnlockAlert = now;
+  if (!ip) ip = 'unknown';
+  if (seenUnlockIps[ip]) return;  // 已经见过：不重复提醒
+  seenUnlockIps[ip] = true;
   unlockTotal++;
   saveUnlockStats();
   const text = `有人解锁了会员内容\n（累计 ${unlockTotal} 人）`;
@@ -757,7 +758,7 @@ app.post('/api/member-login', (req, res) => {
   delete fails[ip];
   saveLoginFails(fails);
   res.cookie(MEMBER_COOKIE, MEMBER_AUTH_HASH, { httpOnly: true, maxAge: MEMBER_COOKIE_MAXAGE, sameSite: 'lax', secure: true });
-  notifyMemberUnlock();  // 提醒焦羽：有人解锁了会员内容
+  notifyMemberUnlock(ip);  // 新会员首次解锁时提醒焦羽（同 IP 不重复）
   res.json({ ok: true });
 });
 
