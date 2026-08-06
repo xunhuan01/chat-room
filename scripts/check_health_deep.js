@@ -19,18 +19,24 @@ const ID_FILE = path.join(__dirname, ".healthcheck_id");
 const HEALTH_MSG = "🔍 健康检查通过";
 
 (async () => {
-  // 1. HTTP 连通性检查
-  const httpOk = await new Promise((resolve) => {
-    const req = https.get(URL, { timeout: 10000 }, (res) => {
-      res.resume();
-      resolve(res.statusCode >= 200 && res.statusCode < 400);
+  // 1. HTTP 连通性检查（3 次重试，容忍瞬时抖动）
+  let httpOk = false;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    httpOk = await new Promise((resolve) => {
+      const req = https.get(URL, { timeout: 10000 }, (res) => {
+        res.resume();
+        resolve(res.statusCode >= 200 && res.statusCode < 400);
+      });
+      req.on("error", () => resolve(false));
+      req.on("timeout", () => { req.destroy(); resolve(false); });
     });
-    req.on("error", () => resolve(false));
-    req.on("timeout", () => { req.destroy(); resolve(false); });
-  });
+    if (httpOk) break;
+    // 失败后等 3 秒再试
+    await new Promise(r => setTimeout(r, 3000));
+  }
 
   if (!httpOk) {
-    console.log("[FAIL] HTTP 不通");
+    console.log("[FAIL] HTTP 3 次尝试均不通");
     process.exit(1);
   }
 
