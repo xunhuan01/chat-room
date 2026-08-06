@@ -137,30 +137,64 @@ function getIPLocation(ip) {
   if (!ip || ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return Promise.resolve(null);
   const cached = ipLocationCache.get(ip);
   if (cached && Date.now() - cached.ts < 24 * 3600 * 1000) return Promise.resolve(cached.city);
+  const TENCENT_LBS_KEY = process.env.TENCENT_LBS_KEY || '';
   return new Promise((resolve) => {
-    const url = `https://whois.pconline.com.cn/ipJson.jsp?ip=${encodeURIComponent(ip)}&json=true`;
-    const req = https.request(url, {
-      method: 'GET',
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://whois.pconline.com.cn/' },
-      timeout: 5000,
-    }, (res) => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        try {
-          const j = JSON.parse(iconv.decode(Buffer.concat(chunks), 'gbk'));
-          let city = '';
-          if (j.pro) city += j.pro;
-          if (j.city) city += j.city;
-          if (!city) city = j.addr || '';
-          if (city) ipLocationCache.set(ip, { city, ts: Date.now() });
-          resolve(city || null);
-        } catch (e) { resolve(null); }
+    // 优先腾讯位置服务（更准，能到区县）；失败/超限回退 pconline
+    const tryTencent = () => {
+      if (!TENCENT_LBS_KEY) return tryPconline();
+      const url = `https://apis.map.qq.com/ws/location/v1/ip?ip=${encodeURIComponent(ip)}&key=${encodeURIComponent(TENCENT_LBS_KEY)}`;
+      const req = https.request(url, {
+        method: 'GET',
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        timeout: 5000,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            if (j.status !== 0) return tryPconline();
+            const a = (j.result && j.result.ad_info) || {};
+            let city = '';
+            if (a.province) city += a.province;
+            if (a.city) city += a.city;
+            if (a.district) city += a.district;
+            if (!city) return tryPconline();
+            ipLocationCache.set(ip, { city, ts: Date.now() });
+            resolve(city);
+          } catch (e) { tryPconline(); }
+        });
       });
-    });
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-    req.end();
+      req.on('error', () => tryPconline());
+      req.on('timeout', () => { req.destroy(); tryPconline(); });
+      req.end();
+    };
+    const tryPconline = () => {
+      const url = `https://whois.pconline.com.cn/ipJson.jsp?ip=${encodeURIComponent(ip)}&json=true`;
+      const req = https.request(url, {
+        method: 'GET',
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://whois.pconline.com.cn/' },
+        timeout: 5000,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(iconv.decode(Buffer.concat(chunks), 'gbk'));
+            let city = '';
+            if (j.pro) city += j.pro;
+            if (j.city) city += j.city;
+            if (!city) city = j.addr || '';
+            if (city) ipLocationCache.set(ip, { city, ts: Date.now() });
+            resolve(city || null);
+          } catch (e) { resolve(null); }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.end();
+    };
+    tryTencent();
   });
 }
 
